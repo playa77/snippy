@@ -1,27 +1,45 @@
-# Snippy v1.0.0
+# Snippy
 
-Desktop client for remote OpenClaw VPS management.
+Desktop client for managing a remote VPS running [OpenClaw](https://openclaw.ai).
 
-## Setup
+## Install
+
+Download the latest release from the [Releases](../../releases) page:
+
+- **AppImage** — make executable and run: `chmod +x Snippy-*.AppImage && ./Snippy-*.AppImage`
+- **deb** — install with: `sudo dpkg -i snippy_*.deb`
+
+## Build from source
 
 ```bash
-cd snippy
+git clone <repo-url> && cd snippy
 npm install
-npm start
+npm start                # run in dev mode
+npm run build:appimage   # build AppImage
+npm run build:deb        # build .deb package
+npm run build:all        # build both
 ```
 
 ## Features
 
-**Terminal** — Two SSH tabs: AGENT (runs configurable command, auto-reconnects with exponential backoff up to 5 attempts) and VPS (plain shell). Password and key-based auth.
+**Dual SSH Terminals** — Two tabs: AGENT runs a configurable command (default: `openclaw tui`) with automatic reconnection on disconnect (exponential backoff, gives up after 5 attempts). VPS provides a plain SSH shell for admin work. Supports password and SSH key authentication.
 
-**Copy/Paste** — Ctrl+Shift+C to copy selected text, Ctrl+Shift+V to paste. Right-click context menu also available in both terminals.
+**Copy and Paste** — Ctrl+Shift+C / Ctrl+Shift+V in terminals. Right-click context menu for copy/paste works everywhere in the app — terminals, input fields, text editors, settings.
 
-**File Manager** — FILES tab provides full SFTP access to the workspace directory. Browse, view/edit text files, create files and directories, rename, delete, upload from local machine, download to local machine. Native OS file dialogs for upload/download.
+**SFTP File Manager** — FILES tab provides full access to the workspace directory (default: `~/.openclaw/workspace`, configurable). Browse directories, view and edit text files in-app, create and rename files and directories, delete, upload from local machine, download to local machine. Upload and download use native OS file dialogs.
 
-**Gateway Health** — LED in the header polls the OpenClaw gateway every 5 seconds. Start/stop/restart buttons beside the LED.
+**Gateway Health and Control** — Status LED in the header polls the OpenClaw gateway (default: `localhost:18789`) every 5 seconds. Start, stop, and restart buttons with confirmation dialogs. Every gateway action opens a live log window showing real-time command output, which stays open until dismissed.
 
-**Settings** — Gear icon opens a settings panel. Configurable: host, port, username, password, SSH key path, agent command, workspace path, gateway host/port. All settings persist to disk across sessions.
+**Settings** — Gear icon opens a settings panel. Configurable: VPS host, port, username, password, SSH key path, agent command, workspace path, gateway host and port. All settings persist to disk across sessions.
 
-**Font Size** — A+/A- buttons in the header scale the entire UI and terminal font size. Persists across sessions.
+**Font Size** — A+ / A- buttons in the header scale the entire UI including terminal font size. Persists across sessions.
 
-**Close Confirmation** — Closing the window with active SSH sessions prompts a confirmation dialog.
+**Close Confirmation** — Closing the window always prompts a confirmation dialog.
+
+## Configuration
+
+Settings are stored in `~/.config/snippy/snippy-config.json` (Linux). Edit via the in-app settings panel or directly in the JSON file.
+
+## License
+
+MIT

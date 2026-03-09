@@ -1,4 +1,4 @@
-// preload.js — Snippy v1.0.1
+// preload.js — Snippy v1.1.0
 // Secure IPC bridge between main and renderer processes.
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -76,5 +76,17 @@ contextBridge.exposeInMainWorld('snippy', {
     const handler = (_event, status) => callback(status);
     ipcRenderer.on('gateway-status', handler);
     return () => ipcRenderer.removeListener('gateway-status', handler);
+  },
+
+  onGatewayLog: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('gateway-log', handler);
+    return () => ipcRenderer.removeListener('gateway-log', handler);
+  },
+
+  onGatewayLogDone: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('gateway-log-done', handler);
+    return () => ipcRenderer.removeListener('gateway-log-done', handler);
   },
 });

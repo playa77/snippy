@@ -1,4 +1,4 @@
-// renderer.js — Snippy v1.0.2
+// renderer.js — Snippy v1.1.0
 // Manages xterm terminals, copy/paste, file manager, gateway health,
 // settings panel, and font size controls.
 
@@ -423,27 +423,73 @@
   }
 
   // =========================================================================
-  // GATEWAY HEALTH
+  // GATEWAY HEALTH + CONTROL
   // =========================================================================
   function wireGateway() {
     const led = $('#gateway-led');
+    const logOverlay = $('#gateway-log-overlay');
+    const logOutput = $('#gw-log-output');
+    const logTitle = $('#gw-log-title');
+    const logStatus = $('#gw-log-status');
+    const logClose = $('#gw-log-close');
+
+    let cleanupLog = null;
+    let cleanupLogDone = null;
 
     window.snippy.onGatewayStatus((status) => {
       led.className = 'gateway-led ' + status;
       led.title = 'Gateway: ' + status;
     });
 
+    // Gateway control buttons — confirmation + log window
     $$('.gw-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const action = btn.dataset.action;
-        btn.disabled = true;
+        const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+
+        // Confirmation dialog
+        const confirmed = confirm(`${actionLabel} the OpenClaw gateway?`);
+        if (!confirmed) return;
+
+        // Open log window
+        logOutput.textContent = '';
+        logTitle.textContent = `Gateway ${actionLabel}`;
+        logStatus.textContent = 'Running...';
+        logStatus.className = 'gw-log-status';
+        logOverlay.classList.add('visible');
+
+        // Clean up previous listeners
+        if (cleanupLog) cleanupLog();
+        if (cleanupLogDone) cleanupLogDone();
+
+        // Wire up live log streaming
+        cleanupLog = window.snippy.onGatewayLog((data) => {
+          logOutput.textContent += data;
+          // Auto-scroll to bottom
+          logOutput.scrollTop = logOutput.scrollHeight;
+        });
+
+        cleanupLogDone = window.snippy.onGatewayLogDone(() => {
+          logStatus.textContent = 'Completed';
+          logStatus.className = 'gw-log-status done';
+        });
+
+        // Fire the command
         const result = await window.snippy.gatewayControl(action);
-        btn.disabled = false;
 
         if (!result.ok) {
-          console.error(`Gateway ${action} failed:`, result.error || result.output);
+          logOutput.textContent += `\nError: ${result.error}\n`;
+          logStatus.textContent = 'Failed';
+          logStatus.className = 'gw-log-status done';
         }
       });
+    });
+
+    // Close log window
+    logClose.addEventListener('click', () => {
+      logOverlay.classList.remove('visible');
+      if (cleanupLog) { cleanupLog(); cleanupLog = null; }
+      if (cleanupLogDone) { cleanupLogDone(); cleanupLogDone = null; }
     });
   }
 

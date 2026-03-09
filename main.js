@@ -1,4 +1,4 @@
-// main.js — Snippy v1.0.2
+// main.js — Snippy v1.1.0
 // Electron main process: SSH terminals, SFTP file manager, gateway health,
 // settings persistence, close confirmation, font size control.
 
@@ -10,7 +10,7 @@ const { Client } = require('ssh2');
 // ---------------------------------------------------------------------------
 // App version — single source of truth
 // ---------------------------------------------------------------------------
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.1.0';
 
 // ---------------------------------------------------------------------------
 // Persistent settings — plain JSON file in userData directory
@@ -568,8 +568,10 @@ ipcMain.handle('gateway-poll-stop', () => {
 });
 
 // ---------------------------------------------------------------------------
-// IPC: gateway control — start/stop/restart via SSH command
+// IPC: gateway control — start/stop/restart via SSH PTY with streamed output
 // ---------------------------------------------------------------------------
+let gatewayControlConn = null;
+
 ipcMain.handle('gateway-control', async (_event, action) => {
   // action is one of: 'start', 'stop', 'restart'
   if (!config.host || !config.username) {
@@ -585,8 +587,16 @@ ipcMain.handle('gateway-control', async (_event, action) => {
   const cmd = commands[action];
   if (!cmd) return { ok: false, error: `Unknown action: ${action}` };
 
+  // Clean up any previous gateway control connection
+  if (gatewayControlConn) {
+    try { gatewayControlConn.end(); } catch (_) { /* ignore */ }
+    gatewayControlConn = null;
+  }
+
   return new Promise((resolve) => {
     const conn = new Client();
+    gatewayControlConn = conn;
+
     const sshConfig = buildSshConfig();
     if (sshConfig.error) {
       resolve({ ok: false, error: sshConfig.error });
@@ -594,25 +604,45 @@ ipcMain.handle('gateway-control', async (_event, action) => {
     }
 
     conn.on('ready', () => {
-      conn.exec(cmd, (err, stream) => {
+      // Use shell with PTY so interactive output works
+      conn.shell({ term: 'xterm-256color', cols: 120, rows: 40 }, (err, stream) => {
         if (err) {
           conn.end();
           resolve({ ok: false, error: err.message });
           return;
         }
 
-        let output = '';
-        stream.on('data', (data) => { output += data.toString(); });
-        stream.stderr.on('data', (data) => { output += data.toString(); });
-        stream.on('close', (code) => {
+        // Signal that the command is running — renderer should open the log window
+        resolve({ ok: true, streaming: true });
+
+        // Send the command followed by exit so the shell closes when done
+        stream.write(cmd + ' 2>&1; echo "\\n[EXIT CODE: $?]"; exit\n');
+
+        stream.on('data', (data) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('gateway-log', data.toString('utf8'));
+          }
+        });
+
+        stream.stderr.on('data', (data) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('gateway-log', data.toString('utf8'));
+          }
+        });
+
+        stream.on('close', () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('gateway-log-done');
+          }
           conn.end();
-          resolve({ ok: code === 0, output: output.trim(), exitCode: code });
+          gatewayControlConn = null;
         });
       });
     });
 
     conn.on('error', (err) => {
       resolve({ ok: false, error: err.message });
+      gatewayControlConn = null;
     });
 
     conn.connect(sshConfig);

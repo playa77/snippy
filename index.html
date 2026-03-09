@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
+  <title>Snippy</title>
+
+  <!-- xterm.js CSS — loaded from node_modules -->
+  <link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
+
+  <style>
+    /* -----------------------------------------------------------------------
+       Snippy v0.1.0 — Core layout
+       ----------------------------------------------------------------------- */
+    :root {
+      --bg:        #0f1117;
+      --bg-raised: #1a1d27;
+      --border:    #2a2d3a;
+      --text:      #e0e0e6;
+      --text-dim:  #7a7d8a;
+      --accent:    #6c8cff;
+      --accent-bg: #6c8cff22;
+      --red:       #ff5f5f;
+      --green:     #4caf50;
+      --yellow:    #ffc107;
+      --font-size: 14px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, 'Segoe UI', 'Liberation Sans', sans-serif;
+      font-size: var(--font-size);
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* -- Header ------------------------------------------------------------ */
+    #header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 16px;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #header .brand {
+      font-weight: 700;
+      font-size: 1.15em;
+      letter-spacing: 0.5px;
+      color: var(--accent);
+      user-select: none;
+    }
+
+    #header .version {
+      font-size: 0.8em;
+      color: var(--text-dim);
+      user-select: none;
+    }
+
+    #header .spacer { flex: 1; }
+
+    /* -- Quick-connect bar (temporary until settings UI) ------------------- */
+    #connect-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    #connect-bar input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 5px 10px;
+      font-size: 0.9em;
+      outline: none;
+    }
+
+    #connect-bar input:focus { border-color: var(--accent); }
+    #connect-bar input::placeholder { color: var(--text-dim); }
+    .input-host { width: 180px; }
+    .input-user { width: 120px; }
+    .input-pass { width: 140px; }
+    .input-port { width: 60px; }
+
+    #connect-bar button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 5px 16px;
+      font-size: 0.9em;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #connect-bar button:hover { opacity: 0.85; }
+    #connect-bar button.disconnect {
+      background: var(--red);
+    }
+
+    /* -- Tab bar ----------------------------------------------------------- */
+    #tab-bar {
+      display: flex;
+      gap: 0;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .tab-btn {
+      padding: 8px 24px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-dim);
+      font-size: 0.95em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      user-select: none;
+    }
+
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .tab-status {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-left: 8px;
+      vertical-align: middle;
+      background: var(--text-dim);
+    }
+
+    .tab-status.connected    { background: var(--green); }
+    .tab-status.connecting   { background: var(--yellow); }
+    .tab-status.error        { background: var(--red); }
+    .tab-status.disconnected { background: var(--text-dim); }
+
+    /* -- Terminal area ----------------------------------------------------- */
+    #terminal-area {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .terminal-pane {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: none;
+      padding: 4px;
+    }
+
+    .terminal-pane.active { display: block; }
+
+    /* -- Status overlay ---------------------------------------------------- */
+    .status-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: var(--text-dim);
+      font-size: 1.05em;
+      z-index: 10;
+      text-align: center;
+      padding: 20px;
+      line-height: 1.6;
+    }
+
+    .status-overlay.hidden { display: none; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div id="header">
+    <span class="brand">SNIPPY</span>
+    <span class="version" id="version-label">v—</span>
+    <span class="spacer"></span>
+  </div>
+
+  <!-- Quick-connect bar -->
+  <div id="connect-bar">
+    <input class="input-host" id="input-host" type="text" placeholder="hostname / IP">
+    <input class="input-port" id="input-port" type="text" placeholder="22" value="22">
+    <input class="input-user" id="input-user" type="text" placeholder="username">
+    <input class="input-pass" id="input-pass" type="password" placeholder="password">
+    <button id="btn-connect">Connect</button>
+    <button id="btn-disconnect" class="disconnect" style="display:none;">Disconnect</button>
+  </div>
+
+  <!-- Tab bar -->
+  <div id="tab-bar">
+    <button class="tab-btn active" data-tab="agent">
+      AGENT <span class="tab-status disconnected" id="status-agent"></span>
+    </button>
+    <button class="tab-btn" data-tab="vps">
+      VPS <span class="tab-status disconnected" id="status-vps"></span>
+    </button>
+  </div>
+
+  <!-- Terminal panes -->
+  <div id="terminal-area">
+    <div class="terminal-pane active" id="pane-agent">
+      <div class="status-overlay" id="overlay-agent">
+        Enter connection details above and click Connect.
+      </div>
+      <div id="term-agent" style="width:100%;height:100%;"></div>
+    </div>
+    <div class="terminal-pane" id="pane-vps">
+      <div class="status-overlay" id="overlay-vps">
+        Enter connection details above and click Connect.
+      </div>
+      <div id="term-vps" style="width:100%;height:100%;"></div>
+    </div>
+  </div>
+
+  <!-- Scripts — xterm from node_modules -->
+  <script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="./node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="./renderer.js"></script>
+</body>
+</html>

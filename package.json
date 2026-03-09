@@ -1,0 +1,23 @@
+{
+  "name": "Snippy",
+  "version": "0.1.0",
+  "description": "Desktop client for remote OpenClaw VPS management",
+  "author": {
+    "name": "Dave Martin",
+    "email": "playa77@gmail.com"
+  },
+  "homepage": "https://github.com/playa77/snippy",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "dev": "electron . --no-sandbox --dev"
+  },
+  "dependencies": {
+    "electron": "^33.0.0",
+    "ssh2": "^1.16.0",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-clipboard": "^0.1.0"
+  },
+  "devDependencies": {}
+}

@@ -1,4 +1,4 @@
-# Snippy v0.1.0
+# Snippy v1.0.0
 
 Desktop client for remote OpenClaw VPS management.
 
@@ -10,19 +10,18 @@ npm install
 npm start
 ```
 
-## What's in v0.1.0
+## Features
 
-- SSH terminal with two tabs: **AGENT** (runs `openclaw tui`, auto-reconnects with exponential backoff, gives up after 5 attempts) and **VPS** (plain shell)
-- Password-based SSH authentication
-- SSH key authentication (enter path in settings — coming in v0.5.0, for now edit `config` in main.js)
-- Connection status LEDs per tab
-- Terminal auto-resizes with window
-- Quick-connect bar for entering credentials
+**Terminal** — Two SSH tabs: AGENT (runs configurable command, auto-reconnects with exponential backoff up to 5 attempts) and VPS (plain shell). Password and key-based auth.
 
-## What's next
+**Copy/Paste** — Ctrl+Shift+C to copy selected text, Ctrl+Shift+V to paste. Right-click context menu also available in both terminals.
 
-- v0.2.0 — Copy/paste support
-- v0.3.0 — File manager
-- v0.4.0 — Gateway health indicator + switch
-- v0.5.0 — Settings UI with persistence
-- v0.6.0 — Font size controls
+**File Manager** — FILES tab provides full SFTP access to the workspace directory. Browse, view/edit text files, create files and directories, rename, delete, upload from local machine, download to local machine. Native OS file dialogs for upload/download.
+
+**Gateway Health** — LED in the header polls the OpenClaw gateway every 5 seconds. Start/stop/restart buttons beside the LED.
+
+**Settings** — Gear icon opens a settings panel. Configurable: host, port, username, password, SSH key path, agent command, workspace path, gateway host/port. All settings persist to disk across sessions.
+
+**Font Size** — A+/A- buttons in the header scale the entire UI and terminal font size. Persists across sessions.
+
+**Close Confirmation** — Closing the window with active SSH sessions prompts a confirmation dialog.

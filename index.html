@@ -7,16 +7,17 @@
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
   <title>Snippy</title>
 
-  <!-- xterm.js CSS — loaded from node_modules -->
+  <!-- xterm.js CSS -->
   <link rel="stylesheet" href="./node_modules/@xterm/xterm/css/xterm.css">
 
   <style>
     /* -----------------------------------------------------------------------
-       Snippy v0.1.0 — Core layout
+       Snippy v1.0.0 — Full layout
        ----------------------------------------------------------------------- */
     :root {
       --bg:        #0f1117;
       --bg-raised: #1a1d27;
+      --bg-input:  #12141c;
       --border:    #2a2d3a;
       --text:      #e0e0e6;
       --text-dim:  #7a7d8a;
@@ -68,7 +69,76 @@
 
     #header .spacer { flex: 1; }
 
-    /* -- Quick-connect bar (temporary until settings UI) ------------------- */
+    /* Gateway indicator */
+    .gateway-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .gateway-label {
+      font-size: 0.8em;
+      color: var(--text-dim);
+      user-select: none;
+    }
+
+    .gateway-led {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      flex-shrink: 0;
+    }
+
+    .gateway-led.up   { background: var(--green); box-shadow: 0 0 6px #4caf5088; }
+    .gateway-led.down { background: var(--red); box-shadow: 0 0 6px #ff5f5f88; }
+
+    .gateway-switch {
+      display: flex;
+      gap: 2px;
+    }
+
+    .gw-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 0.75em;
+      padding: 2px 8px;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+
+    .gw-btn:hover { color: var(--text); border-color: var(--accent); }
+
+    /* Font size buttons */
+    .font-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 0.85em;
+      padding: 2px 8px;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: 700;
+      user-select: none;
+    }
+
+    .font-btn:hover { color: var(--text); border-color: var(--accent); }
+
+    /* Settings gear */
+    .settings-btn {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 1.2em;
+      cursor: pointer;
+      padding: 2px 6px;
+      user-select: none;
+    }
+
+    .settings-btn:hover { color: var(--accent); }
+
+    /* -- Connect bar ------------------------------------------------------- */
     #connect-bar {
       display: flex;
       align-items: center;
@@ -81,7 +151,7 @@
     }
 
     #connect-bar input {
-      background: var(--bg);
+      background: var(--bg-input);
       border: 1px solid var(--border);
       border-radius: 4px;
       color: var(--text);
@@ -98,8 +168,6 @@
     .input-port { width: 60px; }
 
     #connect-bar button {
-      background: var(--accent);
-      color: #fff;
       border: none;
       border-radius: 4px;
       padding: 5px 16px;
@@ -108,10 +176,10 @@
       font-weight: 600;
     }
 
-    #connect-bar button:hover { opacity: 0.85; }
-    #connect-bar button.disconnect {
-      background: var(--red);
-    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-danger  { background: var(--red); color: #fff; }
+    .btn-danger:hover { opacity: 0.85; }
 
     /* -- Tab bar ----------------------------------------------------------- */
     #tab-bar {
@@ -156,21 +224,25 @@
     .tab-status.error        { background: var(--red); }
     .tab-status.disconnected { background: var(--text-dim); }
 
-    /* -- Terminal area ----------------------------------------------------- */
-    #terminal-area {
+    /* -- Main content area ------------------------------------------------- */
+    #content-area {
       flex: 1;
       position: relative;
       overflow: hidden;
     }
 
-    .terminal-pane {
+    .content-pane {
       position: absolute;
       top: 0; left: 0; right: 0; bottom: 0;
       display: none;
-      padding: 4px;
+      overflow: hidden;
     }
 
-    .terminal-pane.active { display: block; }
+    .content-pane.active { display: flex; flex-direction: column; }
+
+    /* Terminal panes fill their container */
+    .terminal-pane { padding: 4px; }
+    .terminal-pane .term-container { flex: 1; overflow: hidden; }
 
     /* -- Status overlay ---------------------------------------------------- */
     .status-overlay {
@@ -186,9 +258,293 @@
       text-align: center;
       padding: 20px;
       line-height: 1.6;
+      white-space: pre-line;
     }
 
     .status-overlay.hidden { display: none; }
+
+    /* -- File manager ------------------------------------------------------ */
+    #pane-files {
+      overflow: hidden;
+    }
+
+    .fm-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .fm-path {
+      flex: 1;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 4px 10px;
+      font-size: 0.9em;
+      font-family: monospace;
+      outline: none;
+    }
+
+    .fm-path:focus { border-color: var(--accent); }
+
+    .fm-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 0.8em;
+      padding: 4px 10px;
+      cursor: pointer;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+
+    .fm-btn:hover { color: var(--text); border-color: var(--accent); }
+
+    .fm-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    .fm-list {
+      width: 300px;
+      min-width: 200px;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .fm-entry {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-size: 0.9em;
+      border-bottom: 1px solid #1e2130;
+      user-select: none;
+    }
+
+    .fm-entry:hover { background: var(--accent-bg); }
+    .fm-entry.selected { background: var(--accent-bg); color: var(--accent); }
+
+    .fm-entry .icon {
+      font-size: 1em;
+      width: 18px;
+      text-align: center;
+      flex-shrink: 0;
+      color: var(--text-dim);
+    }
+
+    .fm-entry .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fm-entry .size { color: var(--text-dim); font-size: 0.8em; flex-shrink: 0; }
+
+    .fm-editor {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .fm-editor-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--bg-raised);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .fm-editor-filename {
+      flex: 1;
+      font-family: monospace;
+      font-size: 0.85em;
+      color: var(--text-dim);
+    }
+
+    .fm-editor-save {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 3px 12px;
+      font-size: 0.8em;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .fm-editor-save:hover { opacity: 0.85; }
+
+    .fm-textarea {
+      flex: 1;
+      background: var(--bg);
+      color: var(--text);
+      border: none;
+      padding: 12px;
+      font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.9em;
+      resize: none;
+      outline: none;
+      tab-size: 4;
+    }
+
+    .fm-placeholder {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      font-size: 0.95em;
+    }
+
+    .fm-message {
+      padding: 8px 12px;
+      font-size: 0.85em;
+      color: var(--text-dim);
+      text-align: center;
+    }
+
+    .fm-message.error { color: var(--red); }
+
+    /* -- Settings panel ---------------------------------------------------- */
+    #settings-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #000000aa;
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #settings-overlay.visible { display: flex; }
+
+    .settings-panel {
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 480px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    .settings-panel h2 {
+      font-size: 1.1em;
+      margin-bottom: 16px;
+      color: var(--accent);
+    }
+
+    .settings-group {
+      margin-bottom: 16px;
+    }
+
+    .settings-group label {
+      display: block;
+      font-size: 0.8em;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .settings-group input {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 0.9em;
+      outline: none;
+    }
+
+    .settings-group input:focus { border-color: var(--accent); }
+
+    .settings-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .settings-row .settings-group { flex: 1; }
+
+    .settings-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-top: 20px;
+    }
+
+    .settings-actions button {
+      border: none;
+      border-radius: 4px;
+      padding: 7px 20px;
+      font-size: 0.9em;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .btn-save { background: var(--accent); color: #fff; }
+    .btn-save:hover { opacity: 0.85; }
+    .btn-cancel { background: var(--border); color: var(--text); }
+    .btn-cancel:hover { opacity: 0.85; }
+
+    /* -- Right-click context menu ------------------------------------------ */
+    #context-menu {
+      position: fixed;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 0;
+      z-index: 200;
+      display: none;
+      min-width: 120px;
+      box-shadow: 0 4px 16px #00000066;
+    }
+
+    #context-menu.visible { display: block; }
+
+    .ctx-item {
+      padding: 6px 16px;
+      font-size: 0.85em;
+      cursor: pointer;
+      color: var(--text);
+      user-select: none;
+    }
+
+    .ctx-item:hover { background: var(--accent-bg); color: var(--accent); }
+
+    /* -- File manager context menu ----------------------------------------- */
+    #fm-context-menu {
+      position: fixed;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 0;
+      z-index: 200;
+      display: none;
+      min-width: 140px;
+      box-shadow: 0 4px 16px #00000066;
+    }
+
+    #fm-context-menu.visible { display: block; }
+
+    .ctx-item-fm {
+      padding: 6px 16px;
+      font-size: 0.85em;
+      cursor: pointer;
+      color: var(--text);
+      user-select: none;
+    }
+
+    .ctx-item-fm:hover { background: var(--accent-bg); color: var(--accent); }
+    .ctx-item-fm.danger:hover { background: #ff5f5f22; color: var(--red); }
   </style>
 </head>
 <body>
@@ -198,6 +554,24 @@
     <span class="brand">SNIPPY</span>
     <span class="version" id="version-label">v—</span>
     <span class="spacer"></span>
+
+    <!-- Gateway health -->
+    <div class="gateway-group">
+      <span class="gateway-label">GATEWAY</span>
+      <span class="gateway-led" id="gateway-led" title="Gateway status"></span>
+      <div class="gateway-switch">
+        <button class="gw-btn" data-action="start" title="Start gateway">&#9654;</button>
+        <button class="gw-btn" data-action="stop" title="Stop gateway">&#9632;</button>
+        <button class="gw-btn" data-action="restart" title="Restart gateway">&#8635;</button>
+      </div>
+    </div>
+
+    <!-- Font size -->
+    <button class="font-btn" id="btn-font-down" title="Decrease font size">A-</button>
+    <button class="font-btn" id="btn-font-up" title="Increase font size">A+</button>
+
+    <!-- Settings -->
+    <button class="settings-btn" id="btn-settings" title="Settings">&#9881;</button>
   </div>
 
   <!-- Quick-connect bar -->
@@ -206,8 +580,8 @@
     <input class="input-port" id="input-port" type="text" placeholder="22" value="22">
     <input class="input-user" id="input-user" type="text" placeholder="username">
     <input class="input-pass" id="input-pass" type="password" placeholder="password">
-    <button id="btn-connect">Connect</button>
-    <button id="btn-disconnect" class="disconnect" style="display:none;">Disconnect</button>
+    <button class="btn-primary" id="btn-connect">Connect</button>
+    <button class="btn-danger" id="btn-disconnect" style="display:none;">Disconnect</button>
   </div>
 
   <!-- Tab bar -->
@@ -218,25 +592,112 @@
     <button class="tab-btn" data-tab="vps">
       VPS <span class="tab-status disconnected" id="status-vps"></span>
     </button>
+    <button class="tab-btn" data-tab="files">FILES</button>
   </div>
 
-  <!-- Terminal panes -->
-  <div id="terminal-area">
-    <div class="terminal-pane active" id="pane-agent">
-      <div class="status-overlay" id="overlay-agent">
-        Enter connection details above and click Connect.
-      </div>
-      <div id="term-agent" style="width:100%;height:100%;"></div>
+  <!-- Content area -->
+  <div id="content-area">
+    <!-- AGENT terminal -->
+    <div class="content-pane terminal-pane active" id="pane-agent">
+      <div class="status-overlay" id="overlay-agent">Enter connection details above and click Connect.</div>
+      <div class="term-container" id="term-agent"></div>
     </div>
-    <div class="terminal-pane" id="pane-vps">
-      <div class="status-overlay" id="overlay-vps">
-        Enter connection details above and click Connect.
+
+    <!-- VPS terminal -->
+    <div class="content-pane terminal-pane" id="pane-vps">
+      <div class="status-overlay" id="overlay-vps">Enter connection details above and click Connect.</div>
+      <div class="term-container" id="term-vps"></div>
+    </div>
+
+    <!-- File manager -->
+    <div class="content-pane" id="pane-files">
+      <div class="status-overlay" id="overlay-files">Connect to a VPS first to browse files.</div>
+      <div class="fm-toolbar">
+        <button class="fm-btn" id="fm-btn-up" title="Go up one directory">&#8593; Up</button>
+        <input class="fm-path" id="fm-path" type="text" placeholder="/path/to/workspace">
+        <button class="fm-btn" id="fm-btn-go">Go</button>
+        <button class="fm-btn" id="fm-btn-refresh">Refresh</button>
+        <button class="fm-btn" id="fm-btn-new-file">+ File</button>
+        <button class="fm-btn" id="fm-btn-new-dir">+ Dir</button>
+        <button class="fm-btn" id="fm-btn-upload">Upload</button>
       </div>
-      <div id="term-vps" style="width:100%;height:100%;"></div>
+      <div class="fm-body">
+        <div class="fm-list" id="fm-list"></div>
+        <div class="fm-editor" id="fm-editor">
+          <div class="fm-placeholder">Select a file to view or edit.</div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- Scripts — xterm from node_modules -->
+  <!-- Settings overlay -->
+  <div id="settings-overlay">
+    <div class="settings-panel">
+      <h2>Settings</h2>
+      <div class="settings-row">
+        <div class="settings-group">
+          <label>Host</label>
+          <input id="set-host" type="text" placeholder="your-vps.example.com">
+        </div>
+        <div class="settings-group" style="max-width:80px;">
+          <label>Port</label>
+          <input id="set-port" type="text" placeholder="22">
+        </div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-group">
+          <label>Username</label>
+          <input id="set-username" type="text" placeholder="root">
+        </div>
+        <div class="settings-group">
+          <label>Password</label>
+          <input id="set-password" type="password" placeholder="password">
+        </div>
+      </div>
+      <div class="settings-group">
+        <label>SSH Key Path (optional, overrides password)</label>
+        <input id="set-key-path" type="text" placeholder="/home/you/.ssh/id_rsa">
+      </div>
+      <div class="settings-group">
+        <label>Agent Command</label>
+        <input id="set-agent-cmd" type="text" placeholder="openclaw tui">
+      </div>
+      <div class="settings-group">
+        <label>Workspace Path</label>
+        <input id="set-workspace" type="text" placeholder="~/.openclaw/workspace">
+      </div>
+      <div class="settings-row">
+        <div class="settings-group">
+          <label>Gateway Host</label>
+          <input id="set-gw-host" type="text" placeholder="localhost">
+        </div>
+        <div class="settings-group" style="max-width:100px;">
+          <label>Gateway Port</label>
+          <input id="set-gw-port" type="text" placeholder="18789">
+        </div>
+      </div>
+      <div class="settings-actions">
+        <button class="btn-cancel" id="btn-settings-cancel">Cancel</button>
+        <button class="btn-save" id="btn-settings-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right-click context menu for terminals -->
+  <div id="context-menu">
+    <div class="ctx-item" id="ctx-copy">Copy</div>
+    <div class="ctx-item" id="ctx-paste">Paste</div>
+  </div>
+
+  <!-- Right-click context menu for file manager -->
+  <div id="fm-context-menu">
+    <div class="ctx-item-fm" id="fmctx-open">Open</div>
+    <div class="ctx-item-fm" id="fmctx-rename">Rename</div>
+    <div class="ctx-item-fm" id="fmctx-download">Download</div>
+    <div class="ctx-item-fm danger" id="fmctx-delete">Delete</div>
+  </div>
+
+  <!-- Scripts -->
   <script src="./node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="./node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="./renderer.js"></script>

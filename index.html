@@ -305,6 +305,19 @@
 
     .fm-btn:hover { color: var(--text); border-color: var(--accent); }
 
+    .fm-btn:disabled { opacity: 0.4; cursor: default; }
+    .fm-btn:disabled:hover { color: var(--text-dim); border-color: var(--border); }
+
+    .fm-btn-download { color: var(--accent) !important; border-color: var(--accent) !important; }
+    .fm-btn-download:disabled { color: var(--text-dim) !important; border-color: var(--border) !important; }
+
+    .fm-toolbar-sep {
+      width: 1px;
+      height: 18px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+
     .fm-body {
       flex: 1;
       display: flex;
@@ -339,6 +352,15 @@
       text-align: center;
       flex-shrink: 0;
       color: var(--text-dim);
+    }
+
+    .fm-checkbox {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+      margin: 0;
     }
 
     .fm-entry .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -596,6 +618,132 @@
       max-height: 60vh;
     }
 
+    /* -- Download progress modal ------------------------------------------- */
+    #download-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #000000aa;
+      z-index: 150;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #download-overlay.visible { display: flex; }
+
+    .dl-panel {
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 440px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .dl-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .dl-title {
+      flex: 1;
+      font-weight: 700;
+      font-size: 0.95em;
+      color: var(--accent);
+    }
+
+    .dl-status {
+      font-size: 0.8em;
+      color: var(--yellow);
+    }
+
+    .dl-status.done { color: var(--green); }
+    .dl-status.error { color: var(--red); }
+
+    .dl-body {
+      padding: 16px;
+    }
+
+    .dl-message {
+      font-size: 0.9em;
+      color: var(--text);
+      margin-bottom: 12px;
+    }
+
+    .dl-bar-track {
+      width: 100%;
+      height: 8px;
+      background: var(--bg);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .dl-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      border-radius: 4px;
+      transition: width 0.2s ease;
+    }
+
+    .dl-bar-fill.indeterminate {
+      width: 30%;
+      animation: dl-pulse 1.2s ease-in-out infinite alternate;
+    }
+
+    @keyframes dl-pulse {
+      0% { margin-left: 0%; }
+      100% { margin-left: 70%; }
+    }
+
+    .dl-detail {
+      margin-top: 8px;
+      font-size: 0.8em;
+      color: var(--text-dim);
+      font-family: monospace;
+      min-height: 1.2em;
+    }
+
+    .dl-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 8px 16px 12px;
+    }
+
+    .dl-cancel {
+      background: var(--red);
+      border: none;
+      color: #fff;
+      border-radius: 4px;
+      padding: 4px 14px;
+      font-size: 0.85em;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .dl-cancel:hover { opacity: 0.85; }
+    .dl-cancel:disabled { opacity: 0.4; cursor: default; }
+    .dl-cancel.hidden { display: none; }
+
+    .dl-close {
+      background: var(--border);
+      border: none;
+      color: var(--text);
+      border-radius: 4px;
+      padding: 4px 14px;
+      font-size: 0.85em;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .dl-close:hover { opacity: 0.85; }
+    .dl-close:disabled { opacity: 0.4; cursor: default; }
+
     /* -- File manager context menu ----------------------------------------- */
     #fm-context-menu {
       position: fixed;
@@ -693,6 +841,11 @@
         <input class="fm-path" id="fm-path" type="text" placeholder="/path/to/workspace">
         <button class="fm-btn" id="fm-btn-go">Go</button>
         <button class="fm-btn" id="fm-btn-refresh">Refresh</button>
+        <span class="fm-toolbar-sep"></span>
+        <button class="fm-btn" id="fm-btn-select-all" title="Select all entries">All</button>
+        <button class="fm-btn" id="fm-btn-select-none" title="Deselect all">None</button>
+        <button class="fm-btn fm-btn-download" id="fm-btn-download" disabled title="Download selected as .tar.gz">Download</button>
+        <span class="fm-toolbar-sep"></span>
         <button class="fm-btn" id="fm-btn-new-file">+ File</button>
         <button class="fm-btn" id="fm-btn-new-dir">+ Dir</button>
         <button class="fm-btn" id="fm-btn-upload">Upload</button>
@@ -782,6 +935,27 @@
         <button class="gw-log-close" id="gw-log-close">Close</button>
       </div>
       <div class="gw-log-output" id="gw-log-output"></div>
+    </div>
+  </div>
+
+  <!-- Download progress modal -->
+  <div id="download-overlay">
+    <div class="dl-panel">
+      <div class="dl-header">
+        <span class="dl-title">Download</span>
+        <span class="dl-status" id="dl-status">Preparing...</span>
+      </div>
+      <div class="dl-body">
+        <div class="dl-message" id="dl-message">Preparing...</div>
+        <div class="dl-bar-track">
+          <div class="dl-bar-fill" id="dl-bar-fill"></div>
+        </div>
+        <div class="dl-detail" id="dl-detail"></div>
+      </div>
+      <div class="dl-footer">
+        <button class="dl-cancel" id="dl-cancel">Cancel</button>
+        <button class="dl-close" id="dl-close">Close</button>
+      </div>
     </div>
   </div>
 

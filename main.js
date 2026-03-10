@@ -1,4 +1,4 @@
-// main.js — Snippy v1.1.5
+// main.js — Snippy v1.1.9
 // Electron main process: SSH terminals, SFTP file manager, gateway health,
 // settings persistence, close confirmation, font size control.
 
@@ -15,7 +15,7 @@ app.commandLine.appendSwitch('no-sandbox');
 // ---------------------------------------------------------------------------
 // App version — single source of truth
 // ---------------------------------------------------------------------------
-const APP_VERSION = '1.1.5';
+const APP_VERSION = '1.1.9';
 
 // ---------------------------------------------------------------------------
 // Persistent settings — plain JSON file in userData directory
@@ -552,6 +552,328 @@ ipcMain.handle('sftp-realpath', async (_event, remotePath) => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// IPC: download multiple files/dirs as .tar.gz archive
+// Uses SSH exec to tar on the remote, then SFTP downloads the archive.
+// Sends progress updates via 'download-progress' IPC channel.
+// Supports cancellation via 'download-cancel' IPC.
+//
+// CANCEL DESIGN: The cancel handler itself sends the 'cancelled' progress
+// event immediately and does all cleanup. It does NOT depend on the archive
+// handler's promise chain resolving. Connections are killed with .destroy()
+// (hard socket kill) not .end() (graceful — can hang while tar/transfer is
+// still running on the remote).
+// ---------------------------------------------------------------------------
+function sendDownloadProgress(phase, detail) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('download-progress', { phase, ...detail });
+  }
+}
+
+// Active download state — tracked so cancellation can tear it down
+let dlActive = false;
+let dlCancelled = false;
+let dlTarConn = null;       // SSH connection running tar
+let dlRemoteTmpPath = '';   // remote archive path to clean up
+let dlLocalSavePath = '';   // local partial file to clean up
+
+// ---------------------------------------------------------------------------
+// IPC: cancel active download
+//
+// This is the AUTHORITATIVE cancel path. It:
+//   1. Hard-kills active connections with .destroy()
+//   2. Sends 'cancelled' progress event immediately (renderer updates UI)
+//   3. Deletes partial local file
+//   4. Fires-and-forgets remote temp cleanup
+//   5. Reconnects SFTP in the background
+//
+// The archive handler's promise chain MAY eventually resolve too, but the
+// renderer does not depend on it. The renderer is purely event-driven.
+// ---------------------------------------------------------------------------
+ipcMain.handle('download-cancel', async () => {
+  if (!dlActive) return { ok: false, error: 'No active download.' };
+
+  dlCancelled = true;
+  dlActive = false;
+
+  // Hard-kill tar SSH connection — .destroy() kills the socket immediately,
+  // unlike .end() which sends a graceful disconnect and waits.
+  if (dlTarConn) {
+    try { dlTarConn.destroy(); } catch (_) { /* ignore */ }
+    dlTarConn = null;
+  }
+
+  // Hard-kill SFTP connection to abort any active fastGet transfer.
+  if (sftpConn) {
+    try { sftpConn.destroy(); } catch (_) { /* ignore */ }
+    sftpConn = null;
+    sftpClient = null;
+  }
+
+  // Delete partial local file
+  if (dlLocalSavePath) {
+    try { fs.unlinkSync(dlLocalSavePath); } catch (_) { /* ignore */ }
+  }
+
+  // Tell renderer IMMEDIATELY — do not wait for handler chain
+  sendDownloadProgress('cancelled', { message: 'Download cancelled.' });
+
+  // Fire-and-forget: clean up remote temp file (non-critical, it's in /tmp)
+  cleanupRemoteFile(dlRemoteTmpPath).catch(() => {});
+
+  // Reconnect SFTP so the file manager keeps working
+  reconnectSftp().catch(() => {});
+
+  return { ok: true };
+});
+
+// Helper: clean up remote temp file via a fresh ephemeral SSH connection
+async function cleanupRemoteFile(remotePath) {
+  if (!remotePath) return;
+  const sshConfig = buildSshConfig();
+  if (sshConfig.error) return;
+
+  await new Promise((resolve) => {
+    const conn = new Client();
+
+    // Safety timeout — don't hang forever on cleanup
+    const timeout = setTimeout(() => {
+      try { conn.destroy(); } catch (_) { /* ignore */ }
+      resolve();
+    }, 10000);
+
+    conn.on('ready', () => {
+      conn.exec(`rm -f '${remotePath.replace(/'/g, "'\\''")}'`, (err, stream) => {
+        if (err) { clearTimeout(timeout); conn.end(); resolve(); return; }
+        stream.on('close', () => { clearTimeout(timeout); conn.end(); resolve(); });
+      });
+    });
+    conn.on('error', () => { clearTimeout(timeout); resolve(); });
+    conn.connect(sshConfig);
+  });
+}
+
+// Helper: reconnect SFTP after a cancel tore down the connection
+async function reconnectSftp() {
+  return new Promise((resolve) => {
+    if (sftpClient) { resolve({ ok: true }); return; }
+
+    const sshConfig = buildSshConfig();
+    if (sshConfig.error) { resolve({ ok: false }); return; }
+
+    const conn = new Client();
+    sftpConn = conn;
+
+    // Safety timeout
+    const timeout = setTimeout(() => {
+      try { conn.destroy(); } catch (_) { /* ignore */ }
+      sftpConn = null;
+      resolve({ ok: false });
+    }, 10000);
+
+    conn.on('ready', () => {
+      conn.sftp((err, sftp) => {
+        clearTimeout(timeout);
+        if (err) { resolve({ ok: false }); return; }
+        sftpClient = sftp;
+        resolve({ ok: true });
+      });
+    });
+    conn.on('error', () => { clearTimeout(timeout); sftpConn = null; resolve({ ok: false }); });
+    conn.connect(sshConfig);
+  });
+}
+
+ipcMain.handle('sftp-download-archive', async (_event, remoteDirPath, entryNames) => {
+  if (!sftpClient) return { ok: false, error: 'SFTP not connected.' };
+  if (!config.host || !config.username) return { ok: false, error: 'Not connected.' };
+  if (!entryNames || entryNames.length === 0) return { ok: false, error: 'No entries selected.' };
+
+  // Reset cancellation state
+  dlActive = true;
+  dlCancelled = false;
+  dlTarConn = null;
+  dlRemoteTmpPath = '';
+  dlLocalSavePath = '';
+
+  // Let user choose where to save the archive
+  const suggestedName = 'snippy-download.tar.gz';
+  const dialogResult = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: suggestedName,
+    title: 'Download archive',
+    filters: [{ name: 'tar.gz archive', extensions: ['tar.gz'] }],
+  });
+
+  if (dialogResult.canceled || !dialogResult.filePath) {
+    dlActive = false;
+    return { ok: false, error: 'Cancelled.' };
+  }
+
+  dlLocalSavePath = dialogResult.filePath;
+  const entryCount = entryNames.length;
+
+  // Build a unique temp path on the remote for the archive
+  const tmpName = `snippy-dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tar.gz`;
+  dlRemoteTmpPath = `/tmp/${tmpName}`;
+
+  // Escape entry names for shell
+  const escapedNames = entryNames.map((n) => "'" + n.replace(/'/g, "'\\''") + "'");
+  const tarCmd = `tar czf ${dlRemoteTmpPath} -C '${remoteDirPath.replace(/'/g, "'\\''")}' ${escapedNames.join(' ')} 2>&1; echo "SNIPPY_EXIT:$?"`;
+
+  // ---- Phase 1: Archive on remote ----
+  sendDownloadProgress('archiving', {
+    message: `Archiving ${entryCount} item${entryCount > 1 ? 's' : ''} on remote...`,
+  });
+
+  const tarResult = await new Promise((resolve) => {
+    if (dlCancelled) { resolve({ ok: false, error: 'Cancelled.' }); return; }
+
+    const conn = new Client();
+    dlTarConn = conn;
+    const sshConfig = buildSshConfig();
+    if (sshConfig.error) {
+      dlTarConn = null;
+      resolve({ ok: false, error: sshConfig.error });
+      return;
+    }
+
+    conn.on('ready', () => {
+      conn.exec(tarCmd, (err, stream) => {
+        if (err) {
+          conn.end();
+          dlTarConn = null;
+          resolve({ ok: false, error: `SSH exec error: ${err.message}` });
+          return;
+        }
+
+        let output = '';
+        stream.on('data', (data) => { output += data.toString(); });
+        stream.stderr.on('data', (data) => { output += data.toString(); });
+        stream.on('close', () => {
+          dlTarConn = null;
+          try { conn.end(); } catch (_) { /* ignore */ }
+
+          if (dlCancelled) {
+            resolve({ ok: false, error: 'Cancelled.' });
+            return;
+          }
+
+          const exitMatch = output.match(/SNIPPY_EXIT:(\d+)/);
+          const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : -1;
+          if (exitCode === 0) {
+            resolve({ ok: true });
+          } else {
+            const cleanOutput = output.replace(/SNIPPY_EXIT:\d+\s*$/, '').trim();
+            resolve({ ok: false, error: `tar failed (exit ${exitCode}): ${cleanOutput}` });
+          }
+        });
+      });
+    });
+
+    conn.on('error', (err) => {
+      dlTarConn = null;
+      resolve({ ok: false, error: dlCancelled ? 'Cancelled.' : `SSH error: ${err.message}` });
+    });
+
+    conn.connect(sshConfig);
+  });
+
+  // If cancelled, the cancel handler already sent the progress event and
+  // cleaned up. Just return so the IPC resolves (unblocks renderer if it
+  // happens to be awaiting it).
+  if (dlCancelled) { dlActive = false; return { ok: false, error: 'Cancelled.' }; }
+
+  if (!tarResult.ok) {
+    dlActive = false;
+    sendDownloadProgress('error', { message: tarResult.error });
+    return tarResult;
+  }
+
+  // ---- Phase 2: Stat the archive to get total size ----
+  sendDownloadProgress('stat', { message: 'Preparing download...' });
+
+  const statResult = await new Promise((resolve) => {
+    if (dlCancelled || !sftpClient) { resolve({ ok: false, error: 'Cancelled.', size: 0 }); return; }
+    sftpClient.stat(dlRemoteTmpPath, (err, stats) => {
+      if (err) resolve({ ok: false, error: err.message, size: 0 });
+      else resolve({ ok: true, size: stats.size });
+    });
+  });
+
+  const totalBytes = statResult.ok ? statResult.size : 0;
+
+  if (dlCancelled) { dlActive = false; return { ok: false, error: 'Cancelled.' }; }
+
+  // ---- Phase 3: SFTP download with step progress ----
+  sendDownloadProgress('downloading', {
+    message: 'Downloading...',
+    bytesTransferred: 0,
+    totalBytes,
+    percent: 0,
+  });
+
+  const downloadResult = await new Promise((resolve) => {
+    if (dlCancelled || !sftpClient) { resolve({ ok: false, error: 'Cancelled.' }); return; }
+
+    const opts = {
+      step: (bytesTransferred, _chunk, total) => {
+        const percent = total > 0 ? Math.round((bytesTransferred / total) * 100) : 0;
+        sendDownloadProgress('downloading', {
+          message: 'Downloading...',
+          bytesTransferred,
+          totalBytes: total,
+          percent,
+        });
+      },
+    };
+
+    sftpClient.fastGet(dlRemoteTmpPath, dlLocalSavePath, opts, (err) => {
+      if (err) {
+        resolve({ ok: false, error: dlCancelled ? 'Cancelled.' : `Download failed: ${err.message}` });
+      } else {
+        resolve({ ok: true, localPath: dlLocalSavePath });
+      }
+    });
+  });
+
+  if (dlCancelled) { dlActive = false; return { ok: false, error: 'Cancelled.' }; }
+
+  if (!downloadResult.ok) {
+    dlActive = false;
+    sendDownloadProgress('error', { message: downloadResult.error });
+    return downloadResult;
+  }
+
+  // ---- Phase 4: Cleanup remote temp file ----
+  sendDownloadProgress('cleanup', { message: 'Cleaning up remote temp file...' });
+  await cleanupRemoteFile(dlRemoteTmpPath);
+
+  // ---- Done ----
+  dlActive = false;
+  const sizeStr = formatBytesMain(totalBytes);
+  sendDownloadProgress('done', {
+    message: `Download complete — ${sizeStr}`,
+    bytesTransferred: totalBytes,
+    totalBytes,
+    percent: 100,
+  });
+
+  return downloadResult;
+});
+
+// Helper: format bytes for progress messages (main process)
+function formatBytesMain(bytes) {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let val = bytes;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return val.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+}
 
 // ===========================================================================
 // GATEWAY HEALTH

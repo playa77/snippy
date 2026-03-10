@@ -1,4 +1,4 @@
-// preload.js — Snippy v1.1.0
+// preload.js — Snippy v1.1.9
 // Secure IPC bridge between main and renderer processes.
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -62,6 +62,13 @@ contextBridge.exposeInMainWorld('snippy', {
   sftpDelete: (remotePath) => ipcRenderer.invoke('sftp-delete', remotePath),
   sftpRmdir: (remotePath) => ipcRenderer.invoke('sftp-rmdir', remotePath),
   sftpDownload: (remotePath, suggestedName) => ipcRenderer.invoke('sftp-download', remotePath, suggestedName),
+  sftpDownloadArchive: (remoteDirPath, entryNames) => ipcRenderer.invoke('sftp-download-archive', remoteDirPath, entryNames),
+  downloadCancel: () => ipcRenderer.invoke('download-cancel'),
+  onDownloadProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('download-progress', handler);
+    return () => ipcRenderer.removeListener('download-progress', handler);
+  },
   sftpUpload: (remoteDir) => ipcRenderer.invoke('sftp-upload', remoteDir),
   sftpRealpath: (remotePath) => ipcRenderer.invoke('sftp-realpath', remotePath),
 

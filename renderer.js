@@ -1,4 +1,4 @@
-// renderer.js — Snippy v1.1.0
+// renderer.js — Snippy v1.1.9
 // Manages xterm terminals, copy/paste, file manager, gateway health,
 // settings panel, and font size controls.
 
@@ -20,7 +20,7 @@
   // File manager state
   let fmCurrentPath = '';
   let fmEntries = [];
-  let fmSelectedEntry = null;     // { name, isDirectory, size }
+  let fmSelectedEntries = new Set();  // Set of entry names currently checked
   let fmContextTarget = null;     // entry targeted by right-click
   let fmEditorDirty = false;
   let fmEditingPath = '';
@@ -648,6 +648,189 @@
       }
     });
 
+    // Download selected entries as .tar.gz archive — progress modal.
+    //
+    // ARCHITECTURE: This is fully event-driven. The download IPC call is
+    // fire-and-forget (not awaited). All UI state changes come from the
+    // 'download-progress' events. The Cancel button calls downloadCancel()
+    // fire-and-forget. The cancel handler in main.js sends 'cancelled'
+    // immediately. The Close button dismisses the modal.
+    //
+    // This means even if the download IPC promise never resolves (e.g. a
+    // destroyed socket doesn't trigger callbacks), the UI still works.
+    $('#fm-btn-download').addEventListener('click', () => {
+      if (!fmCurrentPath || fmSelectedEntries.size === 0) return;
+      const btn = $('#fm-btn-download');
+      btn.disabled = true;
+
+      const overlay = $('#download-overlay');
+      const dlStatus = $('#dl-status');
+      const dlMessage = $('#dl-message');
+      const dlBarFill = $('#dl-bar-fill');
+      const dlDetail = $('#dl-detail');
+      const dlClose = $('#dl-close');
+      const dlCancel = $('#dl-cancel');
+
+      // Guard against double-cleanup
+      let cleaned = false;
+
+      function cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        if (cleanupProgress) { cleanupProgress(); cleanupProgress = null; }
+        dlCancel.removeEventListener('click', onCancel);
+        dlClose.removeEventListener('click', onClose);
+        dlCancel.textContent = 'Cancel';
+        overlay.classList.remove('visible');
+        btn.disabled = false;
+        updateDownloadBtn();
+      }
+
+      // Reset modal state
+      dlStatus.textContent = 'Preparing...';
+      dlStatus.className = 'dl-status';
+      dlMessage.textContent = 'Preparing...';
+      dlBarFill.style.width = '0%';
+      dlBarFill.classList.add('indeterminate');
+      dlDetail.textContent = '';
+      dlClose.disabled = true;
+      dlCancel.classList.remove('hidden');
+      dlCancel.disabled = false;
+      dlCancel.textContent = 'Cancel';
+      overlay.classList.add('visible');
+
+      // Wire cancel — fire-and-forget, no await
+      let cancelClicked = false;
+      function onCancel() {
+        if (cancelClicked) return;
+        cancelClicked = true;
+        dlCancel.disabled = true;
+        dlCancel.textContent = 'Cancelling...';
+        window.snippy.downloadCancel().catch(() => {});
+        // Do NOT await — the 'cancelled' progress event updates the UI
+      }
+      dlCancel.addEventListener('click', onCancel);
+
+      // Wire close — dismisses modal
+      function onClose() {
+        cleanup();
+      }
+      dlClose.addEventListener('click', onClose);
+
+      // Listen for progress events from main process
+      let cleanupProgress = window.snippy.onDownloadProgress((data) => {
+        switch (data.phase) {
+          case 'archiving':
+            dlStatus.textContent = 'Archiving...';
+            dlStatus.className = 'dl-status';
+            dlMessage.textContent = data.message;
+            dlBarFill.classList.add('indeterminate');
+            dlBarFill.style.width = '30%';
+            dlDetail.textContent = '';
+            break;
+
+          case 'stat':
+            dlMessage.textContent = data.message;
+            break;
+
+          case 'downloading':
+            dlStatus.textContent = 'Downloading...';
+            dlStatus.className = 'dl-status';
+            dlBarFill.classList.remove('indeterminate');
+            dlBarFill.style.width = (data.percent || 0) + '%';
+            dlMessage.textContent = data.message;
+            if (data.totalBytes > 0) {
+              dlDetail.textContent = formatBytes(data.bytesTransferred || 0) + ' / ' + formatBytes(data.totalBytes) + '  (' + data.percent + '%)';
+            }
+            break;
+
+          case 'cleanup':
+            dlStatus.textContent = 'Cleaning up...';
+            dlCancel.classList.add('hidden');
+            dlBarFill.style.width = '100%';
+            dlMessage.textContent = data.message;
+            dlDetail.textContent = '';
+            break;
+
+          // Terminal states — enable Close, hide Cancel
+          case 'done':
+            dlStatus.textContent = 'Complete';
+            dlStatus.className = 'dl-status done';
+            dlCancel.classList.add('hidden');
+            dlBarFill.style.width = '100%';
+            dlMessage.textContent = data.message;
+            dlDetail.textContent = '';
+            dlClose.disabled = false;
+            break;
+
+          case 'cancelled':
+            dlStatus.textContent = 'Cancelled';
+            dlStatus.className = 'dl-status error';
+            dlCancel.classList.add('hidden');
+            dlBarFill.classList.remove('indeterminate');
+            dlBarFill.style.width = '0%';
+            dlMessage.textContent = data.message;
+            dlDetail.textContent = '';
+            dlClose.disabled = false;
+            break;
+
+          case 'error':
+            dlStatus.textContent = 'Failed';
+            dlStatus.className = 'dl-status error';
+            dlCancel.classList.add('hidden');
+            dlBarFill.classList.remove('indeterminate');
+            dlBarFill.style.width = '0%';
+            dlMessage.textContent = data.message;
+            dlDetail.textContent = '';
+            dlClose.disabled = false;
+            break;
+        }
+      });
+
+      // Fire-and-forget the download IPC. The ONLY case where we use the
+      // return value is save-dialog-cancel (user hit Cancel in the OS file
+      // picker before any progress events started).
+      const entryNames = Array.from(fmSelectedEntries);
+      window.snippy.sftpDownloadArchive(fmCurrentPath, entryNames).then((result) => {
+        if (!result.ok && result.error === 'Cancelled.' && !cancelClicked) {
+          // Save dialog was cancelled — no progress modal needed
+          cleanup();
+          return;
+        }
+        // For all other completions (success/error/cancel), the progress
+        // listener already updated the UI. Enable Close as a safety net
+        // in case a progress event was missed.
+        dlClose.disabled = false;
+        dlCancel.classList.add('hidden');
+      }).catch(() => {
+        // IPC error — enable Close so the user isn't stuck
+        dlClose.disabled = false;
+        dlCancel.classList.add('hidden');
+        dlStatus.textContent = 'Failed';
+        dlStatus.className = 'dl-status error';
+        dlMessage.textContent = 'IPC error — download process may have crashed.';
+      });
+    });
+
+    // Select All
+    $('#fm-btn-select-all').addEventListener('click', () => {
+      fmSelectedEntries.clear();
+      for (const entry of fmEntries) {
+        fmSelectedEntries.add(entry.name);
+      }
+      $$('.fm-entry .fm-checkbox').forEach((cb) => { cb.checked = true; });
+      updateEntryHighlights();
+      updateDownloadBtn();
+    });
+
+    // Select None
+    $('#fm-btn-select-none').addEventListener('click', () => {
+      fmSelectedEntries.clear();
+      $$('.fm-entry .fm-checkbox').forEach((cb) => { cb.checked = false; });
+      updateEntryHighlights();
+      updateDownloadBtn();
+    });
+
     // File manager context menu
     const fmMenu = $('#fm-context-menu');
 
@@ -732,7 +915,8 @@
   async function navigateTo(remotePath) {
     fmCurrentPath = remotePath;
     $('#fm-path').value = remotePath;
-    fmSelectedEntry = null;
+    fmSelectedEntries.clear();
+    updateDownloadBtn();
 
     // Clear editor
     showEditorPlaceholder('Select a file to view or edit.');
@@ -756,6 +940,22 @@
       const el = document.createElement('div');
       el.className = 'fm-entry';
 
+      // Checkbox for multi-select
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'fm-checkbox';
+      cb.checked = fmSelectedEntries.has(entry.name);
+      cb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (cb.checked) {
+          fmSelectedEntries.add(entry.name);
+        } else {
+          fmSelectedEntries.delete(entry.name);
+        }
+        updateEntryHighlights();
+        updateDownloadBtn();
+      });
+
       const icon = document.createElement('span');
       icon.className = 'icon';
       icon.textContent = entry.isDirectory ? '\uD83D\uDCC1' : '\uD83D\uDCC4';
@@ -764,6 +964,7 @@
       name.className = 'name';
       name.textContent = entry.name;
 
+      el.appendChild(cb);
       el.appendChild(icon);
       el.appendChild(name);
 
@@ -774,12 +975,22 @@
         el.appendChild(size);
       }
 
-      // Click -> open
-      el.addEventListener('click', () => {
-        // Highlight
-        $$('.fm-entry').forEach((e) => e.classList.remove('selected'));
-        el.classList.add('selected');
-        fmSelectedEntry = entry;
+      // Single click -> toggle checkbox selection
+      el.addEventListener('click', (e) => {
+        if (e.target === cb) return; // checkbox handles itself
+        cb.checked = !cb.checked;
+        if (cb.checked) {
+          fmSelectedEntries.add(entry.name);
+        } else {
+          fmSelectedEntries.delete(entry.name);
+        }
+        updateEntryHighlights();
+        updateDownloadBtn();
+      });
+
+      // Double click -> open (navigate into dir / edit file)
+      el.addEventListener('dblclick', (e) => {
+        if (e.target === cb) return;
         openEntry(entry);
       });
 
@@ -788,9 +999,6 @@
         e.preventDefault();
         e.stopPropagation();
         fmContextTarget = entry;
-
-        $$('.fm-entry').forEach((e) => e.classList.remove('selected'));
-        el.classList.add('selected');
 
         const menu = $('#fm-context-menu');
         menu.style.left = e.clientX + 'px';
@@ -807,6 +1015,29 @@
       msg.textContent = 'Empty directory.';
       list.appendChild(msg);
     }
+
+    updateEntryHighlights();
+  }
+
+  // Sync .selected class with the current checkbox state
+  function updateEntryHighlights() {
+    $$('.fm-entry').forEach((el) => {
+      const cb = el.querySelector('.fm-checkbox');
+      if (cb && cb.checked) {
+        el.classList.add('selected');
+      } else {
+        el.classList.remove('selected');
+      }
+    });
+  }
+
+  // Enable/disable the toolbar Download button based on selection count
+  function updateDownloadBtn() {
+    const btn = $('#fm-btn-download');
+    if (!btn) return;
+    const count = fmSelectedEntries.size;
+    btn.disabled = count === 0;
+    btn.textContent = count > 0 ? `Download (${count})` : 'Download';
   }
 
   function openEntry(entry) {

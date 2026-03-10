@@ -1,4 +1,4 @@
-# Snippy
+# Snippy v1.1.4
 
 Desktop client for managing a remote VPS running [OpenClaw](https://openclaw.ai).
 
@@ -8,6 +8,8 @@ Download the latest release from the [Releases](../../releases) page:
 
 - **AppImage** — make executable and run: `chmod +x Snippy-*.AppImage && ./Snippy-*.AppImage`
 - **deb** — install with: `sudo dpkg -i snippy_*.deb`
+
+Both packages work as a normal (non-root) user with no manual steps.
 
 ## Build from source
 

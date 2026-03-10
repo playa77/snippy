@@ -1,4 +1,4 @@
-// main.js — Snippy v1.1.0
+// main.js — Snippy v1.1.5
 // Electron main process: SSH terminals, SFTP file manager, gateway health,
 // settings persistence, close confirmation, font size control.
 
@@ -8,9 +8,14 @@ const fs = require('fs');
 const { Client } = require('ssh2');
 
 // ---------------------------------------------------------------------------
+// Disable Chromium SUID sandbox (required on Linux without root-owned helper)
+// ---------------------------------------------------------------------------
+app.commandLine.appendSwitch('no-sandbox');
+
+// ---------------------------------------------------------------------------
 // App version — single source of truth
 // ---------------------------------------------------------------------------
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.5';
 
 // ---------------------------------------------------------------------------
 // Persistent settings — plain JSON file in userData directory

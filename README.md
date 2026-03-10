@@ -14,7 +14,7 @@ Both packages work as a normal (non-root) user with no manual steps.
 ## Build from source
 
 ```bash
-git clone <repo-url> && cd snippy
+git clone https://github.com/playa77/snippy && cd snippy
 npm install
 npm start                # run in dev mode
 npm run build:appimage   # build AppImage

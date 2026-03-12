@@ -13,6 +13,13 @@
     vps:   { terminal: null, fitAddon: null, connected: false, cleanupData: null, cleanupStatus: null },
   };
 
+  // Chunked input transport prevents huge pastes from overwhelming IPC/SSH.
+  const INPUT_CHUNK_SIZE = 2048;
+  const inputQueues = {
+    agent: { queue: [], scheduled: false },
+    vps: { queue: [], scheduled: false },
+  };
+
   let activeTab = 'agent';
   let currentFontSize = 14;
   let isConnected = false;
@@ -104,7 +111,7 @@
       // Keystrokes -> SSH
       terminal.onData((data) => {
         if (tabs[tabId].connected) {
-          window.snippy.sendInput(tabId, data);
+          queueTerminalInput(tabId, data);
         }
       });
 
@@ -132,7 +139,7 @@
         if (ev.ctrlKey && ev.shiftKey && ev.code === 'KeyV') {
           navigator.clipboard.readText().then((text) => {
             if (text && tabs[tabId].connected) {
-              window.snippy.sendInput(tabId, text);
+              queueTerminalInput(tabId, text);
             }
           });
           return false;
@@ -162,6 +169,48 @@
       }
     }
   }
+
+  function queueTerminalInput(tabId, data) {
+    if (!data) return;
+
+    const channel = inputQueues[tabId];
+    if (!channel) {
+      window.snippy.sendInput(tabId, data);
+      return;
+    }
+
+    for (let i = 0; i < data.length; i += INPUT_CHUNK_SIZE) {
+      channel.queue.push(data.slice(i, i + INPUT_CHUNK_SIZE));
+    }
+
+    if (channel.scheduled) return;
+    channel.scheduled = true;
+
+    const flush = () => {
+      channel.scheduled = false;
+      if (!tabs[tabId].connected || channel.queue.length === 0) {
+        channel.queue.length = 0;
+        return;
+      }
+
+      // Send several chunks per frame for high throughput without UI stalls.
+      let sent = 0;
+      const maxChunksPerFrame = 8;
+      while (channel.queue.length > 0 && sent < maxChunksPerFrame) {
+        const chunk = channel.queue.shift();
+        window.snippy.sendInput(tabId, chunk);
+        sent++;
+      }
+
+      if (channel.queue.length > 0) {
+        channel.scheduled = true;
+        setTimeout(flush, 0);
+      }
+    };
+
+    setTimeout(flush, 0);
+  }
+
 
   // =========================================================================
   // TAB SWITCHING
@@ -282,6 +331,8 @@
       if (tabs[tabId].cleanupStatus) tabs[tabId].cleanupStatus();
       tabs[tabId].cleanupData = null;
       tabs[tabId].cleanupStatus = null;
+      inputQueues[tabId].queue.length = 0;
+      inputQueues[tabId].scheduled = false;
       setStatusDot(tabId, 'disconnected');
       showOverlay(tabId, 'Disconnected.');
     }
@@ -575,7 +626,7 @@
       if (contextTabId) {
         navigator.clipboard.readText().then((text) => {
           if (text && tabs[contextTabId].connected) {
-            window.snippy.sendInput(contextTabId, text);
+            queueTerminalInput(contextTabId, text);
           }
         });
       }

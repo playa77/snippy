@@ -989,7 +989,7 @@ function pollGatewayOnce() {
 
   conn.on('ready', () => {
     // Attempt TCP connection to the gateway via the SSH tunnel
-    const checkCmd = `curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://${gwHost}:${gwPort}/ 2>/dev/null || echo "DOWN"`;
+    const checkCmd = `code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 --max-time 3 http://${gwHost}:${gwPort}/ 2>/dev/null || true); if [ -n "$code" ] && [ "$code" != "000" ]; then echo "UP"; else echo "DOWN"; fi`;
 
     conn.exec(checkCmd, (err, stream) => {
       if (err) {
@@ -1003,12 +1003,9 @@ function pollGatewayOnce() {
       stream.on('close', () => {
         conn.end();
         const trimmed = output.trim();
-        // Any HTTP response code means the gateway is up
-        if (trimmed === 'DOWN' || trimmed === '') {
-          sendGatewayStatus('down');
-        } else {
-          sendGatewayStatus('up');
-        }
+        if (trimmed === 'UP') sendGatewayStatus('up');
+        else if (trimmed === 'DOWN') sendGatewayStatus('down');
+        else sendGatewayStatus('unknown');
       });
     });
   });

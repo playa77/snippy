@@ -65,6 +65,30 @@ let config = CONFIG_DEFAULTS;
 // ---------------------------------------------------------------------------
 const sessions = {};
 
+function queueTerminalChunk(tabId, chunk) {
+  const session = sessions[tabId];
+  if (!session || !mainWindow || mainWindow.isDestroyed()) return;
+
+  session.pendingChunks.push(chunk);
+  if (session.flushScheduled) return;
+
+  session.flushScheduled = true;
+  setImmediate(() => {
+    const liveSession = sessions[tabId];
+    if (!liveSession) return;
+
+    liveSession.flushScheduled = false;
+    if (liveSession.pendingChunks.length === 0) return;
+
+    const payload = Buffer.concat(liveSession.pendingChunks);
+    liveSession.pendingChunks = [];
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(`ssh-data-${tabId}`, payload);
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Dedicated SFTP connection (separate from terminal sessions)
 // ---------------------------------------------------------------------------
@@ -191,7 +215,7 @@ ipcMain.handle('ssh-connect', (_event, tabId) => {
     }
 
     const conn = new Client();
-    sessions[tabId] = { conn, shell: null };
+    sessions[tabId] = { conn, shell: null, pendingChunks: [], flushScheduled: false };
 
     const sshConfig = buildSshConfig();
     if (sshConfig.error) {
@@ -215,15 +239,11 @@ ipcMain.handle('ssh-connect', (_event, tabId) => {
         }
 
         stream.on('data', (data) => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send(`ssh-data-${tabId}`, data.toString('binary'));
-          }
+          queueTerminalChunk(tabId, Buffer.isBuffer(data) ? data : Buffer.from(data));
         });
 
         stream.stderr.on('data', (data) => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send(`ssh-data-${tabId}`, data.toString('binary'));
-          }
+          queueTerminalChunk(tabId, Buffer.isBuffer(data) ? data : Buffer.from(data));
         });
 
         stream.on('close', () => {
@@ -266,10 +286,10 @@ ipcMain.handle('ssh-connect', (_event, tabId) => {
 // ---------------------------------------------------------------------------
 // IPC: SSH input / resize / disconnect
 // ---------------------------------------------------------------------------
-ipcMain.on('ssh-input', (_event, tabId, data) => {
+ipcMain.on('ssh-input', (_event, tabId, data, isBinary = false) => {
   const session = sessions[tabId];
   if (session && session.shell && session.shell.writable) {
-    session.shell.write(data);
+    session.shell.write(data, isBinary ? 'binary' : undefined);
   }
 });
 

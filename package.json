@@ -9,6 +9,7 @@
   "homepage": "https://github.com/playa77/snippy",
   "main": "main.js",
   "scripts": {
+    "postinstall": "electron-rebuild",
     "start": "electron . --no-sandbox",
     "dev": "electron . --no-sandbox --dev",
     "build:appimage": "electron-builder --linux AppImage",
@@ -16,13 +17,15 @@
     "build:all": "electron-builder --linux AppImage deb"
   },
   "dependencies": {
+    "node-pty": "^1.0.0",
     "ssh2": "^1.16.0",
     "@xterm/xterm": "^5.5.0",
     "@xterm/addon-fit": "^0.10.0"
   },
   "devDependencies": {
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "electron-rebuild": "^3.2.9"
   },
   "build": {
     "appId": "com.snippy.app",
@@ -33,11 +36,18 @@
       "category": "Development",
       "icon": "icon.png"
     },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
     "files": [
       "main.js",
       "preload.js",
       "renderer.js",
       "index.html",
+      "scripts/**/*",
+      "package.json",
+      "node_modules/node-pty/build/**",
       "node_modules/**/*"
     ]
   }

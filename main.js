@@ -6,6 +6,8 @@ const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { Client } = require('ssh2');
+const pty = require('node-pty');
+const { exec } = require('child_process');
 
 // ---------------------------------------------------------------------------
 // Disable Chromium SUID sandbox (required on Linux without root-owned helper)
@@ -61,33 +63,9 @@ function saveConfig() {
 let config = CONFIG_DEFAULTS;
 
 // ---------------------------------------------------------------------------
-// Active SSH sessions: keyed by tab id ('agent' | 'vps')
+// Active PTY sessions: keyed by tab id ('agent' | 'vps')
 // ---------------------------------------------------------------------------
-const sessions = {};
-
-function queueTerminalChunk(tabId, chunk) {
-  const session = sessions[tabId];
-  if (!session || !mainWindow || mainWindow.isDestroyed()) return;
-
-  session.pendingChunks.push(chunk);
-  if (session.flushScheduled) return;
-
-  session.flushScheduled = true;
-  setImmediate(() => {
-    const liveSession = sessions[tabId];
-    if (!liveSession) return;
-
-    liveSession.flushScheduled = false;
-    if (liveSession.pendingChunks.length === 0) return;
-
-    const payload = Buffer.concat(liveSession.pendingChunks);
-    liveSession.pendingChunks = [];
-
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(`ssh-data-${tabId}`, payload);
-    }
-  });
-}
+const sessions = new Map();
 
 // ---------------------------------------------------------------------------
 // Dedicated SFTP connection (separate from terminal sessions)
@@ -106,8 +84,8 @@ const GATEWAY_POLL_INTERVAL_MS = 5000;
 // ---------------------------------------------------------------------------
 const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 2000;
-let agentReconnectAttempts = 0;
-let agentReconnectTimer = null;
+
+let sshpassAvailable = false;
 
 // ---------------------------------------------------------------------------
 // Window creation
@@ -161,8 +139,10 @@ function createWindow() {
   mainWindow.setMenuBarVisibility(false);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   config = loadConfig();
+  sshpassAvailable = await checkSshpassAvailable();
+  console.log(`[snippy] sshpass available: ${sshpassAvailable}`);
   createWindow();
 });
 app.on('window-all-closed', () => app.quit());
@@ -203,111 +183,49 @@ ipcMain.handle('set-font-size', (_event, size) => {
 });
 
 // ---------------------------------------------------------------------------
-// IPC: SSH connect
+// IPC: PTY connect / disconnect / input / resize / retry
 // ---------------------------------------------------------------------------
-ipcMain.handle('ssh-connect', (_event, tabId) => {
-  return new Promise((resolve) => {
-    destroySession(tabId);
-
-    if (!config.host || !config.username) {
-      resolve({ ok: false, error: 'Host and username are required. Open settings to configure.' });
-      return;
-    }
-
-    const conn = new Client();
-    sessions[tabId] = { conn, shell: null, pendingChunks: [], flushScheduled: false };
-
-    const sshConfig = buildSshConfig();
-    if (sshConfig.error) {
-      resolve({ ok: false, error: sshConfig.error });
-      return;
-    }
-
-    conn.on('ready', () => {
-      conn.shell({ term: 'xterm-256color', cols: 80, rows: 24 }, (err, stream) => {
-        if (err) {
-          resolve({ ok: false, error: `Shell error: ${err.message}` });
-          return;
-        }
-
-        sessions[tabId].shell = stream;
-
-        // For AGENT tab, send the configured command immediately
-        if (tabId === 'agent') {
-          stream.write(config.agentCommand + '\n');
-          agentReconnectAttempts = 0;
-        }
-
-        stream.on('data', (data) => {
-          queueTerminalChunk(tabId, Buffer.isBuffer(data) ? data : Buffer.from(data));
-        });
-
-        stream.stderr.on('data', (data) => {
-          queueTerminalChunk(tabId, Buffer.isBuffer(data) ? data : Buffer.from(data));
-        });
-
-        stream.on('close', () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send(`ssh-status-${tabId}`, { status: 'closed' });
-          }
-          destroySession(tabId);
-          if (tabId === 'agent') scheduleAgentReconnect();
-        });
-
-        resolve({ ok: true });
-      });
-    });
-
-    conn.on('error', (err) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(`ssh-status-${tabId}`, {
-          status: 'error',
-          message: err.message,
-        });
-      }
-      destroySession(tabId);
-      if (tabId === 'agent') scheduleAgentReconnect();
-      resolve({ ok: false, error: err.message });
-    });
-
-    conn.on('end', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(`ssh-status-${tabId}`, { status: 'ended' });
-      }
-    });
-
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(`ssh-status-${tabId}`, { status: 'connecting' });
-    }
-    conn.connect(sshConfig);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// IPC: SSH input / resize / disconnect
-// ---------------------------------------------------------------------------
-ipcMain.on('ssh-input', (_event, tabId, data, isBinary = false) => {
-  const session = sessions[tabId];
-  if (session && session.shell && session.shell.writable) {
-    session.shell.write(data, isBinary ? 'binary' : undefined);
+ipcMain.handle('pty:connect', async (_event, { tabId, config: rendererConfig }) => {
+  if (rendererConfig && typeof rendererConfig === 'object') {
+    config = { ...config, ...rendererConfig };
   }
-});
 
-ipcMain.on('ssh-resize', (_event, tabId, cols, rows) => {
-  const session = sessions[tabId];
-  if (session && session.shell) {
-    session.shell.setWindow(rows, cols, 0, 0);
+  if (!config.host || !config.username) {
+    throw new Error('Host and username are required. Open settings to configure.');
   }
+
+  const existing = sessions.get(tabId);
+  if (existing && existing.retryTimer) {
+    clearTimeout(existing.retryTimer);
+    existing.retryTimer = null;
+  }
+
+  await createPTYSession(tabId, { ...config }, { preserveRetryCount: false });
 });
 
-ipcMain.handle('ssh-disconnect', (_event, tabId) => {
+ipcMain.handle('pty:disconnect', async (_event, { tabId }) => {
+  const session = sessions.get(tabId);
+  if (session) session.intentionalDisconnect = true;
   destroySession(tabId);
-  if (tabId === 'agent' && agentReconnectTimer) {
-    clearTimeout(agentReconnectTimer);
-    agentReconnectTimer = null;
-    agentReconnectAttempts = 0;
+});
+
+ipcMain.handle('pty:retry', async (_event, { tabId }) => {
+  const session = sessions.get(tabId);
+  if (session) {
+    session.retryCount = 0;
+    session.intentionalDisconnect = false;
   }
-  return { ok: true };
+  await createPTYSession(tabId, { ...config }, { preserveRetryCount: false });
+});
+
+ipcMain.on('pty:input', (_event, { tabId, data }) => {
+  const session = sessions.get(tabId);
+  if (!session || !session.ptyProcess || session.status !== 'connected') return;
+  session.ptyProcess.write(data);
+});
+
+ipcMain.on('pty:resize', (_event, { tabId, cols, rows }) => {
+  resizePTY(tabId, cols, rows);
 });
 
 // ===========================================================================
@@ -1082,19 +1000,175 @@ function buildSshConfig() {
   return sshConfig;
 }
 
+function resolveAuthMode(sshConfig) {
+  if (sshConfig.privateKeyPath) return 'key';
+  if (sshConfig.password) return 'password';
+  return 'none';
+}
+
+function buildTerminalConfig(runtimeConfig) {
+  const authMode = resolveAuthMode(runtimeConfig);
+  if (authMode === 'none') {
+    return { error: 'No password or SSH key configured.' };
+  }
+
+  return {
+    host: runtimeConfig.host,
+    port: runtimeConfig.port || 22,
+    username: runtimeConfig.username,
+    authMode,
+    keyPath: runtimeConfig.privateKeyPath,
+    password: runtimeConfig.password,
+    agentCommand: runtimeConfig.agentCommand || 'openclaw tui',
+  };
+}
+
+function buildSSHArgs(tabId, terminalConfig) {
+  const args = [
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'UserKnownHostsFile=/dev/null',
+    '-o', 'ConnectTimeout=10',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=3',
+    '-p', String(terminalConfig.port || 22),
+  ];
+
+  if (terminalConfig.authMode === 'key' && terminalConfig.keyPath) {
+    args.push('-i', terminalConfig.keyPath);
+    args.push('-o', 'IdentitiesOnly=yes');
+  }
+
+  args.push(`${terminalConfig.username}@${terminalConfig.host}`);
+
+  if (tabId === 'agent' && terminalConfig.agentCommand) {
+    args.push(terminalConfig.agentCommand);
+  }
+
+  return args;
+}
+
+function resolveSSHBinary(terminalConfig) {
+  return terminalConfig.authMode === 'password' ? 'sshpass' : 'ssh';
+}
+
+function buildSpawnArgs(tabId, terminalConfig) {
+  const sshArgs = buildSSHArgs(tabId, terminalConfig);
+  if (terminalConfig.authMode === 'password') {
+    return ['-e', 'ssh', ...sshArgs];
+  }
+  return sshArgs;
+}
+
+function buildSpawnEnv(terminalConfig) {
+  const env = { ...process.env, TERM: 'xterm-256color' };
+  if (terminalConfig.authMode === 'password') {
+    env.SSHPASS = terminalConfig.password || '';
+  }
+  return env;
+}
+
+function sendPtyStatus(tabId, status, message) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const payload = { tabId, status };
+  if (message) payload.message = message;
+  mainWindow.webContents.send('pty:status', payload);
+}
+
+function sendPtyError(tabId, message) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('pty:error', { tabId, message });
+}
+
+async function createPTYSession(tabId, runtimeConfig, options = {}) {
+  const existing = sessions.get(tabId);
+  const preservedRetryCount = options.preserveRetryCount && existing ? existing.retryCount : 0;
+  destroySession(tabId);
+
+  const terminalConfig = buildTerminalConfig(runtimeConfig);
+  if (terminalConfig.error) {
+    sendPtyError(tabId, terminalConfig.error);
+    throw new Error(terminalConfig.error);
+  }
+
+  if (terminalConfig.authMode === 'password' && !sshpassAvailable) {
+    const message = 'Password authentication requires sshpass.\nInstall with: sudo apt install sshpass\nOr switch to SSH key authentication in Settings.';
+    sendPtyError(tabId, message);
+    throw new Error(message);
+  }
+
+  sendPtyStatus(tabId, 'connecting');
+
+  const session = {
+    id: tabId,
+    ptyProcess: null,
+    status: 'connecting',
+    retryCount: preservedRetryCount,
+    retryTimer: null,
+    intentionalDisconnect: false,
+    configSnapshot: terminalConfig,
+  };
+  sessions.set(tabId, session);
+
+  try {
+    const binary = resolveSSHBinary(terminalConfig);
+    const args = buildSpawnArgs(tabId, terminalConfig);
+    const env = buildSpawnEnv(terminalConfig);
+
+    const ptyProcess = pty.spawn(binary, args, {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: process.env.HOME || process.cwd(),
+      env,
+    });
+
+    session.ptyProcess = ptyProcess;
+    session.status = 'connected';
+    session.retryCount = 0;
+    session.intentionalDisconnect = false;
+
+    sendPtyStatus(tabId, 'connected');
+
+    ptyProcess.onData((data) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('pty:data', { tabId, data });
+      }
+    });
+
+    ptyProcess.onExit(({ exitCode, signal }) => {
+      handlePTYExit(tabId, exitCode, signal);
+    });
+  } catch (err) {
+    session.status = 'disconnected';
+    sendPtyError(tabId, err.message);
+    throw err;
+  }
+}
+
+function resizePTY(tabId, cols, rows) {
+  const session = sessions.get(tabId);
+  if (!session || !session.ptyProcess || session.status !== 'connected') return;
+  try {
+    session.ptyProcess.resize(cols, rows);
+  } catch (_) {
+    // Ignore resize races against session teardown.
+  }
+}
+
 function destroySession(tabId) {
-  const session = sessions[tabId];
+  const session = sessions.get(tabId);
   if (!session) return;
 
-  if (session.shell) {
-    try { session.shell.close(); } catch (_) { /* ignore */ }
-    session.shell = null;
+  if (session.retryTimer) {
+    clearTimeout(session.retryTimer);
+    session.retryTimer = null;
   }
-  if (session.conn) {
-    try { session.conn.end(); } catch (_) { /* ignore */ }
-    session.conn = null;
+  if (session.ptyProcess) {
+    try { session.ptyProcess.kill(); } catch (_) { /* ignore */ }
+    session.ptyProcess = null;
   }
-  delete sessions[tabId];
+
+  sessions.delete(tabId);
 }
 
 function destroySftp() {
@@ -1115,34 +1189,52 @@ function cleanupAllSessions() {
   destroySftp();
 }
 
-function scheduleAgentReconnect() {
-  if (agentReconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('ssh-status-agent', {
-        status: 'reconnect-failed',
-        message: `Gave up after ${RECONNECT_MAX_ATTEMPTS} attempts.`,
-      });
-    }
-    agentReconnectAttempts = 0;
+function handlePTYExit(tabId, exitCode, signal) {
+  const session = sessions.get(tabId);
+  if (!session) return;
+
+  session.ptyProcess = null;
+
+  if (session.intentionalDisconnect) {
+    session.status = 'disconnected';
+    sendPtyStatus(tabId, 'disconnected');
+    sessions.delete(tabId);
     return;
   }
 
-  agentReconnectAttempts++;
-  const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, agentReconnectAttempts - 1);
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('ssh-status-agent', {
-      status: 'reconnecting',
-      attempt: agentReconnectAttempts,
-      maxAttempts: RECONNECT_MAX_ATTEMPTS,
-      delayMs: delay,
-    });
+  if (tabId === 'vps') {
+    session.status = 'disconnected';
+    sendPtyStatus(tabId, 'disconnected', 'VPS session ended. Use Connect to reconnect.');
+    sessions.delete(tabId);
+    return;
   }
 
-  agentReconnectTimer = setTimeout(() => {
-    agentReconnectTimer = null;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('ssh-trigger-reconnect', 'agent');
-    }
+  if (session.retryCount >= RECONNECT_MAX_ATTEMPTS) {
+    session.status = 'failed';
+    sendPtyStatus(tabId, 'failed', `Connection failed after ${RECONNECT_MAX_ATTEMPTS} attempts. Click Connect to retry.`);
+    return;
+  }
+
+  const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, session.retryCount);
+  session.retryCount += 1;
+  session.status = 'reconnecting';
+
+  sendPtyStatus(tabId, 'reconnecting', `Reconnecting (attempt ${session.retryCount}/${RECONNECT_MAX_ATTEMPTS}) in ${delay / 1000}s...`);
+
+  session.retryTimer = setTimeout(() => {
+    session.retryTimer = null;
+    createPTYSession(tabId, { ...config }, { preserveRetryCount: true })
+      .catch((err) => {
+        sendPtyError(tabId, `Reconnect attempt failed: ${err.message}`);
+        handlePTYExit(tabId, -1, null);
+      });
   }, delay);
+}
+
+function checkSshpassAvailable() {
+  return new Promise((resolve) => {
+    exec('which sshpass', (err) => {
+      resolve(!err);
+    });
+  });
 }

@@ -9,13 +9,16 @@
   // STATE
   // =========================================================================
   const tabs = {
-    agent: { terminal: null, fitAddon: null, connected: false, cleanupData: null, cleanupStatus: null },
-    vps:   { terminal: null, fitAddon: null, connected: false, cleanupData: null, cleanupStatus: null },
+    agent: { terminal: null, fitAddon: null, connected: false },
+    vps: { terminal: null, fitAddon: null, connected: false },
   };
 
   let activeTab = 'agent';
   let currentFontSize = 14;
   let isConnected = false;
+  let cleanupPtyData = null;
+  let cleanupPtyStatus = null;
+  let cleanupPtyError = null;
 
   // File manager state
   let fmCurrentPath = '';
@@ -70,9 +73,7 @@
     wireGateway();
     wireContextMenu();
     wireFileManager();
-
-    // Listen for auto-reconnect trigger
-    window.snippy.onTriggerReconnect((tabId) => connectTab(tabId));
+    wirePtyEvents();
   })();
 
   // =========================================================================
@@ -103,22 +104,18 @@
 
       // Keystrokes -> SSH
       terminal.onData((data) => {
-        if (tabs[tabId].connected) {
-          window.snippy.sendInput(tabId, data);
-        }
+        if (tabs[tabId].connected) window.snippy.ptyInput(tabId, data);
       });
 
-      // Binary data (e.g., mouse reporting) -> SSH
+      // Binary data (e.g., mouse reporting) -> PTY
       terminal.onBinary((data) => {
-        if (tabs[tabId].connected) {
-          window.snippy.sendInput(tabId, data, true);
-        }
+        if (tabs[tabId].connected) window.snippy.ptyInput(tabId, data);
       });
 
       // Resize -> SSH
       terminal.onResize(({ cols, rows }) => {
         if (tabs[tabId].connected) {
-          window.snippy.resize(tabId, cols, rows);
+          window.snippy.ptyResize(tabId, cols, rows);
         }
       });
 
@@ -139,7 +136,7 @@
         if (ev.ctrlKey && ev.shiftKey && ev.code === 'KeyV') {
           navigator.clipboard.readText().then((text) => {
             if (text && tabs[tabId].connected) {
-              window.snippy.sendInput(tabId, text);
+              window.snippy.ptyInput(tabId, text);
             }
           });
           return false;
@@ -151,6 +148,29 @@
 
     // Initial fit
     setTimeout(() => fitActiveTerminal(), 100);
+  }
+
+  function wirePtyEvents() {
+    if (cleanupPtyData) cleanupPtyData();
+    if (cleanupPtyStatus) cleanupPtyStatus();
+    if (cleanupPtyError) cleanupPtyError();
+
+    cleanupPtyData = window.snippy.onPtyData(({ tabId, data }) => {
+      const tab = tabs[tabId];
+      if (!tab || !tab.terminal) return;
+      tab.terminal.write(typeof data === 'string' ? data : String(data));
+    });
+
+    cleanupPtyStatus = window.snippy.onPtyStatus((payload) => {
+      handleStatusChange(payload.tabId, payload);
+    });
+
+    cleanupPtyError = window.snippy.onPtyError(({ tabId, message }) => {
+      const tab = tabs[tabId];
+      if (!tab || !tab.terminal) return;
+      tab.terminal.write(`\r\n\x1b[31m[snippy] ${message}\x1b[0m\r\n`);
+      setStatusDot(tabId, 'error');
+    });
   }
 
   function fitActiveTerminal() {
@@ -246,28 +266,10 @@
   async function connectTab(tabId) {
     const tab = tabs[tabId];
 
-    if (tab.cleanupData) tab.cleanupData();
-    if (tab.cleanupStatus) tab.cleanupStatus();
-
     showOverlay(tabId, 'Connecting...');
     setStatusDot(tabId, 'connecting');
-
-    tab.cleanupData = window.snippy.onData(tabId, (data) => {
-      if (data instanceof Uint8Array) {
-        tab.terminal.write(data);
-        return;
-      }
-
-      tab.terminal.write(typeof data === 'string' ? data : String(data));
-    });
-
-    tab.cleanupStatus = window.snippy.onStatus(tabId, (info) => {
-      handleStatusChange(tabId, info);
-    });
-
-    const result = await window.snippy.connect(tabId);
-
-    if (result.ok) {
+    try {
+      await window.snippy.ptyConnect(tabId, await window.snippy.getConfigRaw());
       tab.connected = true;
       hideOverlay(tabId);
       setStatusDot(tabId, 'connected');
@@ -275,25 +277,21 @@
       setTimeout(() => {
         fitActiveTerminal();
         const { cols, rows } = tab.terminal;
-        window.snippy.resize(tabId, cols, rows);
+        window.snippy.ptyResize(tabId, cols, rows);
       }, 100);
 
       if (tabId === activeTab) tab.terminal.focus();
-    } else {
+    } catch (err) {
       tab.connected = false;
-      showOverlay(tabId, `Connection failed: ${result.error}`);
+      showOverlay(tabId, `Connection failed: ${err.message}`);
       setStatusDot(tabId, 'error');
     }
   }
 
   async function handleDisconnect() {
     for (const tabId of ['agent', 'vps']) {
-      await window.snippy.disconnect(tabId);
+      await window.snippy.ptyDisconnect(tabId);
       tabs[tabId].connected = false;
-      if (tabs[tabId].cleanupData) tabs[tabId].cleanupData();
-      if (tabs[tabId].cleanupStatus) tabs[tabId].cleanupStatus();
-      tabs[tabId].cleanupData = null;
-      tabs[tabId].cleanupStatus = null;
       setStatusDot(tabId, 'disconnected');
       showOverlay(tabId, 'Disconnected.');
     }
@@ -318,6 +316,11 @@
         setStatusDot(tabId, 'disconnected');
         if (tabId !== 'agent') showOverlay(tabId, 'Connection closed.');
         break;
+      case 'disconnected':
+        tabs[tabId].connected = false;
+        setStatusDot(tabId, 'disconnected');
+        if (info.message) showOverlay(tabId, info.message);
+        break;
       case 'error':
         tabs[tabId].connected = false;
         setStatusDot(tabId, 'error');
@@ -325,11 +328,12 @@
         break;
       case 'reconnecting':
         setStatusDot(tabId, 'connecting');
-        showOverlay(tabId, `Reconnecting... attempt ${info.attempt}/${info.maxAttempts}\n(next retry in ${Math.round(info.delayMs / 1000)}s)`);
+        showOverlay(tabId, info.message || 'Reconnecting...');
         break;
       case 'reconnect-failed':
+      case 'failed':
         setStatusDot(tabId, 'error');
-        showOverlay(tabId, `Reconnection failed: ${info.message}\nClick Connect to try again.`);
+        showOverlay(tabId, `${info.message || 'Reconnection failed.'}\nClick Connect to try again.`);
         btnConnect.style.display = '';
         btnDisconnect.style.display = 'none';
         break;
@@ -367,7 +371,7 @@
       for (const tabId of ['agent', 'vps']) {
         if (tabs[tabId].connected) {
           const { cols, rows } = tabs[tabId].terminal;
-          window.snippy.resize(tabId, cols, rows);
+          window.snippy.ptyResize(tabId, cols, rows);
         }
       }
     }, 50);
@@ -587,7 +591,7 @@
       if (contextTabId) {
         navigator.clipboard.readText().then((text) => {
           if (text && tabs[contextTabId].connected) {
-            window.snippy.sendInput(contextTabId, text);
+            window.snippy.ptyInput(contextTabId, text);
           }
         });
       }
@@ -1172,7 +1176,7 @@
       const tab = tabs[activeTab];
       if (tab && tab.connected) {
         const { cols, rows } = tab.terminal;
-        window.snippy.resize(activeTab, cols, rows);
+        window.snippy.ptyResize(activeTab, cols, rows);
       }
     }
   });

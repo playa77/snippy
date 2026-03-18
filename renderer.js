@@ -108,6 +108,13 @@
         }
       });
 
+      // Binary data (e.g., mouse reporting) -> SSH
+      terminal.onBinary((data) => {
+        if (tabs[tabId].connected) {
+          window.snippy.sendInput(tabId, data, true);
+        }
+      });
+
       // Resize -> SSH
       terminal.onResize(({ cols, rows }) => {
         if (tabs[tabId].connected) {
@@ -246,7 +253,12 @@
     setStatusDot(tabId, 'connecting');
 
     tab.cleanupData = window.snippy.onData(tabId, (data) => {
-      tab.terminal.write(data);
+      if (data instanceof Uint8Array) {
+        tab.terminal.write(data);
+        return;
+      }
+
+      tab.terminal.write(typeof data === 'string' ? data : String(data));
     });
 
     tab.cleanupStatus = window.snippy.onStatus(tabId, (info) => {

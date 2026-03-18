@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('snippy', {
   // -------------------------------------------------------------------------
   connect: (tabId) => ipcRenderer.invoke('ssh-connect', tabId),
   disconnect: (tabId) => ipcRenderer.invoke('ssh-disconnect', tabId),
-  sendInput: (tabId, data) => ipcRenderer.send('ssh-input', tabId, data),
+  sendInput: (tabId, data, isBinary = false) => ipcRenderer.send('ssh-input', tabId, data, isBinary),
   resize: (tabId, cols, rows) => ipcRenderer.send('ssh-resize', tabId, cols, rows),
 
   onData: (tabId, callback) => {

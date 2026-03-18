@@ -23,31 +23,30 @@ contextBridge.exposeInMainWorld('snippy', {
   setFontSize: (size) => ipcRenderer.invoke('set-font-size', size),
 
   // -------------------------------------------------------------------------
-  // SSH session management
+  // PTY terminal session management
   // -------------------------------------------------------------------------
-  connect: (tabId) => ipcRenderer.invoke('ssh-connect', tabId),
-  disconnect: (tabId) => ipcRenderer.invoke('ssh-disconnect', tabId),
-  sendInput: (tabId, data, isBinary = false) => ipcRenderer.send('ssh-input', tabId, data, isBinary),
-  resize: (tabId, cols, rows) => ipcRenderer.send('ssh-resize', tabId, cols, rows),
+  ptyConnect: (tabId, cfg) => ipcRenderer.invoke('pty:connect', { tabId, config: cfg }),
+  ptyDisconnect: (tabId) => ipcRenderer.invoke('pty:disconnect', { tabId }),
+  ptyRetry: (tabId) => ipcRenderer.invoke('pty:retry', { tabId }),
+  ptyInput: (tabId, data) => ipcRenderer.send('pty:input', { tabId, data }),
+  ptyResize: (tabId, cols, rows) => ipcRenderer.send('pty:resize', { tabId, cols, rows }),
 
-  onData: (tabId, callback) => {
-    const channel = `ssh-data-${tabId}`;
-    const handler = (_event, data) => callback(data);
-    ipcRenderer.on(channel, handler);
-    return () => ipcRenderer.removeListener(channel, handler);
+  onPtyData: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('pty:data', handler);
+    return () => ipcRenderer.removeListener('pty:data', handler);
   },
 
-  onStatus: (tabId, callback) => {
-    const channel = `ssh-status-${tabId}`;
-    const handler = (_event, status) => callback(status);
-    ipcRenderer.on(channel, handler);
-    return () => ipcRenderer.removeListener(channel, handler);
+  onPtyStatus: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('pty:status', handler);
+    return () => ipcRenderer.removeListener('pty:status', handler);
   },
 
-  onTriggerReconnect: (callback) => {
-    const handler = (_event, tabId) => callback(tabId);
-    ipcRenderer.on('ssh-trigger-reconnect', handler);
-    return () => ipcRenderer.removeListener('ssh-trigger-reconnect', handler);
+  onPtyError: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('pty:error', handler);
+    return () => ipcRenderer.removeListener('pty:error', handler);
   },
 
   // -------------------------------------------------------------------------

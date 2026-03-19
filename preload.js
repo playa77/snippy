@@ -1,4 +1,4 @@
-// preload.js — Snippy v1.1.9
+// preload.js — Snippy v1.1.10
 // Secure IPC bridge between main and renderer processes.
 
 const { contextBridge, ipcRenderer } = require('electron');

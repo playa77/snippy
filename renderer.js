@@ -318,6 +318,13 @@
     btnDisconnect.style.display = 'none';
   }
 
+  function refreshConnectButtonState() {
+    const hasConnectedTerminal = TERMINAL_TAB_IDS.some((tabId) => tabs[tabId].connected);
+    isConnected = hasConnectedTerminal;
+    btnConnect.style.display = hasConnectedTerminal ? 'none' : '';
+    btnDisconnect.style.display = hasConnectedTerminal ? '' : 'none';
+  }
+
   function handleStatusChange(tabId, info) {
     switch (info.status) {
       case 'connecting':
@@ -328,16 +335,19 @@
         tabs[tabId].connected = false;
         setStatusDot(tabId, 'disconnected');
         if (tabId !== 'agent') showOverlay(tabId, 'Connection closed.');
+        refreshConnectButtonState();
         break;
       case 'disconnected':
         tabs[tabId].connected = false;
         setStatusDot(tabId, 'disconnected');
         if (info.message) showOverlay(tabId, info.message);
+        refreshConnectButtonState();
         break;
       case 'error':
         tabs[tabId].connected = false;
         setStatusDot(tabId, 'error');
         showOverlay(tabId, `Error: ${info.message}`);
+        refreshConnectButtonState();
         break;
       case 'reconnecting':
         setStatusDot(tabId, 'connecting');

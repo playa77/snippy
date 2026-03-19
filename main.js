@@ -83,6 +83,7 @@ const GATEWAY_POLL_INTERVAL_MS = 5000;
 // ---------------------------------------------------------------------------
 const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 2000;
+const RECONNECT_STABLE_RESET_MS = 30000;
 
 let sshpassAvailable = false;
 let debugLogPath = null;
@@ -1124,7 +1125,6 @@ function shellQuote(value) {
 function getAgentTabRemoteCommand() {
   const zellijInstallHint = 'sudo apt update && sudo apt install zellij';
   const openclawSession = 'openclaw';
-  const openclawLaunch = "openclaw tui";
   return [
     `if ! command -v zellij >/dev/null 2>&1; then`,
     `  echo '[snippy] zellij is not installed on the remote VPS.';`,
@@ -1132,7 +1132,7 @@ function getAgentTabRemoteCommand() {
     `  exit 127;`,
     `fi;`,
     `if ! zellij list-sessions 2>/dev/null | awk '{print $1}' | grep -Fxq ${shellQuote(openclawSession)}; then`,
-    `  zellij --session ${shellQuote(openclawSession)} -d -- bash -lc ${shellQuote(openclawLaunch)};`,
+    `  zellij --session ${shellQuote(openclawSession)} -d;`,
     `fi;`,
     `exec zellij attach ${shellQuote(openclawSession)}`,
   ].join(' ');
@@ -1147,6 +1147,10 @@ function buildSSHArgs(tabId, terminalConfig) {
     '-o', 'ServerAliveCountMax=3',
     '-p', String(terminalConfig.port || 22),
   ];
+
+  if (tabId === 'agent') {
+    args.push('-tt');
+  }
 
   if (terminalConfig.authMode === 'key' && terminalConfig.keyPath) {
     args.push('-i', terminalConfig.keyPath);
@@ -1252,9 +1256,10 @@ async function runRemoteCommand(command) {
 
 function parseZellijSessionsOutput(output) {
   debugLog('zellij:parse', 'Raw zellij list-sessions output', { output });
+ main
   const lines = output
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => line.replace(ansiRegex, '').trim())
     .filter(Boolean);
 
   const parsed = lines.map((line) => {
@@ -1297,7 +1302,7 @@ async function ensureOpenClawSession() {
     '  exit 127;',
     'fi;',
     "if ! zellij list-sessions 2>/dev/null | awk '{print $1}' | grep -Fxq 'openclaw'; then",
-    "  zellij --session 'openclaw' -d -- bash -lc 'openclaw tui';",
+    "  zellij --session 'openclaw' -d;",
     'fi',
   ].join(' ');
 
@@ -1371,6 +1376,7 @@ async function createPTYSession(tabId, runtimeConfig, options = {}) {
     status: 'connecting',
     retryCount: preservedRetryCount,
     retryTimer: null,
+    reconnectResetTimer: null,
     intentionalDisconnect: false,
     configSnapshot: terminalConfig,
   };
@@ -1397,8 +1403,22 @@ async function createPTYSession(tabId, runtimeConfig, options = {}) {
 
     session.ptyProcess = ptyProcess;
     session.status = 'connected';
-    session.retryCount = 0;
     session.intentionalDisconnect = false;
+
+    if (session.reconnectResetTimer) {
+      clearTimeout(session.reconnectResetTimer);
+      session.reconnectResetTimer = null;
+    }
+    session.reconnectResetTimer = setTimeout(() => {
+      const activeSession = sessions.get(tabId);
+      if (!activeSession || activeSession !== session) return;
+      activeSession.retryCount = 0;
+      activeSession.reconnectResetTimer = null;
+      debugLog('pty:reconnect', 'Reset retry counter after stable connection window', {
+        tabId,
+        stableMs: RECONNECT_STABLE_RESET_MS,
+      });
+    }, RECONNECT_STABLE_RESET_MS);
 
     sendPtyStatus(tabId, 'connected');
 
@@ -1439,6 +1459,10 @@ function destroySession(tabId) {
   if (session.retryTimer) {
     clearTimeout(session.retryTimer);
     session.retryTimer = null;
+  }
+  if (session.reconnectResetTimer) {
+    clearTimeout(session.reconnectResetTimer);
+    session.reconnectResetTimer = null;
   }
   if (session.ptyProcess) {
     try { session.ptyProcess.kill(); } catch (_) { /* ignore */ }

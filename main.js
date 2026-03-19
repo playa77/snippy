@@ -1269,6 +1269,16 @@ function parseZellijSessionsOutput(output) {
     .filter(Boolean);
 
   const parsed = lines.map((line) => {
+    if (/^no active zellij sessions/i.test(line)) {
+      return null;
+    }
+
+    // zellij may report exited/dead sessions; Sessions tab should only show
+    // active attachable sessions.
+    if (/\b(exited|dead)\b/i.test(line)) {
+      return null;
+    }
+
     const [nameToken] = line.split(/\s+/);
     const name = (nameToken || '').replace(/[,*]+$/g, '');
     const createdMatch = line.match(/\[Created ([^\]]+)\]/i);
@@ -1282,7 +1292,7 @@ function parseZellijSessionsOutput(output) {
       clients: clientsMatch ? Number(clientsMatch[1]) : 0,
       raw: line,
     };
-  }).filter((session) => !!session.name);
+  }).filter((session) => !!session?.name);
 
   debugLog('zellij:parse', 'Parsed zellij sessions', parsed);
   return parsed;

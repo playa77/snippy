@@ -83,13 +83,85 @@ const GATEWAY_POLL_INTERVAL_MS = 5000;
 // ---------------------------------------------------------------------------
 const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 2000;
+const RECONNECT_STABLE_RESET_MS = 30000;
 
 let sshpassAvailable = false;
+let debugLogPath = null;
 
 // ---------------------------------------------------------------------------
 // Window creation
 // ---------------------------------------------------------------------------
 let mainWindow = null;
+
+function sanitizeForLog(value, options = {}) {
+  const maxLength = Number.isInteger(options.maxLength) ? options.maxLength : 600;
+  const redactKeys = new Set(['password', 'passphrase', 'secret', 'token', 'privateKey']);
+
+  if (value == null) return String(value);
+  if (typeof value === 'string') {
+    const escaped = value
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\t/g, '\\t');
+    return escaped.length > maxLength ? `${escaped.slice(0, maxLength)}…(truncated)` : escaped;
+  }
+
+  if (typeof value === 'object') {
+    try {
+      const replacer = (key, val) => {
+        if (redactKeys.has(key)) return '<redacted>';
+        if (typeof val === 'string' && val.length > maxLength) {
+          return `${val.slice(0, maxLength)}…(truncated)`;
+        }
+        return val;
+      };
+      return JSON.stringify(value, replacer);
+    } catch (_) {
+      return '[unserializable object]';
+    }
+  }
+
+  return String(value);
+}
+
+function initDebugLogger() {
+  try {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    debugLogPath = path.join(logsDir, `snippy-debug-${stamp}.log`);
+    fs.writeFileSync(debugLogPath, '', 'utf8');
+    debugLog('logger', 'Debug logger initialized', {
+      debugLogPath,
+      appVersion: APP_VERSION,
+      platform: process.platform,
+      arch: process.arch,
+      pid: process.pid,
+      node: process.version,
+      cwd: process.cwd(),
+      userData: app.getPath('userData'),
+    });
+  } catch (err) {
+    console.error('[snippy] Failed to initialize debug logger:', err.message);
+  }
+}
+
+function debugLog(scope, message, details) {
+  const now = new Date().toISOString();
+  const detailPart = details === undefined ? '' : ` | details=${sanitizeForLog(details)}`;
+  const line = `[${now}] [${scope}] ${message}${detailPart}\n`;
+
+  try {
+    if (debugLogPath) {
+      fs.appendFileSync(debugLogPath, line, 'utf8');
+    }
+  } catch (err) {
+    console.error('[snippy] Failed writing debug log:', err.message);
+  }
+
+  // Keep main process diagnostics visible in terminal too.
+  process.stdout.write(line);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -140,8 +212,10 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   config = loadConfig();
+  initDebugLogger();
+  debugLog('app', 'Loaded config from disk', { ...config, password: config.password ? '<redacted>' : '' });
   sshpassAvailable = await checkSshpassAvailable();
-  console.log(`[snippy] sshpass available: ${sshpassAvailable}`);
+  debugLog('app', 'sshpass availability detected', { sshpassAvailable });
   createWindow();
 });
 app.on('window-all-closed', () => app.quit());
@@ -150,6 +224,7 @@ app.on('window-all-closed', () => app.quit());
 // IPC: app metadata
 // ---------------------------------------------------------------------------
 ipcMain.handle('get-version', () => APP_VERSION);
+ipcMain.handle('debug:get-log-info', () => ({ path: debugLogPath || '' }));
 
 // ---------------------------------------------------------------------------
 // IPC: settings management
@@ -165,6 +240,7 @@ ipcMain.handle('get-config-raw', () => {
 });
 
 ipcMain.handle('set-config', (_event, newConfig) => {
+  debugLog('ipc:set-config', 'Renderer updated config', { ...newConfig, password: newConfig?.password ? '<redacted>' : '' });
   config = { ...config, ...newConfig };
   saveConfig();
   return { ok: true };
@@ -185,6 +261,10 @@ ipcMain.handle('set-font-size', (_event, size) => {
 // IPC: PTY connect / disconnect / input / resize / retry
 // ---------------------------------------------------------------------------
 ipcMain.handle('pty:connect', async (_event, { tabId, config: rendererConfig }) => {
+  debugLog('pty:connect', 'Connect requested', {
+    tabId,
+    rendererConfig: rendererConfig ? { ...rendererConfig, password: rendererConfig.password ? '<redacted>' : '' } : null,
+  });
   if (rendererConfig && typeof rendererConfig === 'object') {
     config = { ...config, ...rendererConfig };
   }
@@ -203,24 +283,29 @@ ipcMain.handle('pty:connect', async (_event, { tabId, config: rendererConfig }) 
 });
 
 ipcMain.handle('zellij:list-sessions', async () => {
+  debugLog('zellij:list', 'Listing sessions requested');
   return listZellijSessions();
 });
 
 ipcMain.handle('zellij:kill-session', async (_event, { name }) => {
+  debugLog('zellij:kill', 'Kill session requested', { name });
   return killZellijSession(name);
 });
 
 ipcMain.handle('zellij:create-openclaw', async () => {
+  debugLog('zellij:create-openclaw', 'Ensure openclaw requested');
   return ensureOpenClawSession();
 });
 
 ipcMain.handle('pty:disconnect', async (_event, { tabId }) => {
+  debugLog('pty:disconnect', 'Disconnect requested', { tabId });
   const session = sessions.get(tabId);
   if (session) session.intentionalDisconnect = true;
   destroySession(tabId);
 });
 
 ipcMain.handle('pty:retry', async (_event, { tabId }) => {
+  debugLog('pty:retry', 'Manual retry requested', { tabId });
   const session = sessions.get(tabId);
   if (session) {
     session.retryCount = 0;
@@ -1040,7 +1125,6 @@ function shellQuote(value) {
 function getAgentTabRemoteCommand() {
   const zellijInstallHint = 'sudo apt update && sudo apt install zellij';
   const openclawSession = 'openclaw';
-  const openclawLaunch = "openclaw tui";
   return [
     `if ! command -v zellij >/dev/null 2>&1; then`,
     `  echo '[snippy] zellij is not installed on the remote VPS.';`,
@@ -1048,7 +1132,7 @@ function getAgentTabRemoteCommand() {
     `  exit 127;`,
     `fi;`,
     `if ! zellij list-sessions 2>/dev/null | awk '{print $1}' | grep -Fxq ${shellQuote(openclawSession)}; then`,
-    `  zellij --session ${shellQuote(openclawSession)} -d -- bash -lc ${shellQuote(openclawLaunch)};`,
+    `  zellij --session ${shellQuote(openclawSession)} -d;`,
     `fi;`,
     `exec zellij attach ${shellQuote(openclawSession)}`,
   ].join(' ');
@@ -1063,6 +1147,10 @@ function buildSSHArgs(tabId, terminalConfig) {
     '-o', 'ServerAliveCountMax=3',
     '-p', String(terminalConfig.port || 22),
   ];
+
+  if (tabId === 'agent') {
+    args.push('-tt');
+  }
 
   if (terminalConfig.authMode === 'key' && terminalConfig.keyPath) {
     args.push('-i', terminalConfig.keyPath);
@@ -1102,11 +1190,13 @@ function sendPtyStatus(tabId, status, message) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const payload = { tabId, status };
   if (message) payload.message = message;
+  debugLog('pty:status', 'Status update sent to renderer', payload);
   mainWindow.webContents.send('pty:status', payload);
 }
 
 function sendPtyError(tabId, message) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  debugLog('pty:error', 'Error sent to renderer', { tabId, message });
   mainWindow.webContents.send('pty:error', { tabId, message });
 }
 
@@ -1165,12 +1255,14 @@ async function runRemoteCommand(command) {
 }
 
 function parseZellijSessionsOutput(output) {
+  debugLog('zellij:parse', 'Raw zellij list-sessions output', { output });
+  const ansiRegex = /\u001b\[[0-9;]*m/g;
   const lines = output
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => line.replace(ansiRegex, '').trim())
     .filter(Boolean);
 
-  return lines.map((line) => {
+  const parsed = lines.map((line) => {
     const [nameToken] = line.split(/\s+/);
     const name = (nameToken || '').replace(/[,*]+$/g, '');
     const createdMatch = line.match(/\[Created ([^\]]+)\]/i);
@@ -1185,10 +1277,14 @@ function parseZellijSessionsOutput(output) {
       raw: line,
     };
   }).filter((session) => !!session.name);
+
+  debugLog('zellij:parse', 'Parsed zellij sessions', parsed);
+  return parsed;
 }
 
 async function listZellijSessions() {
   const result = await runRemoteCommand(`bash -lc ${shellQuote('command -v zellij >/dev/null 2>&1 && zellij list-sessions')}`);
+  debugLog('zellij:list', 'Remote list command completed', result);
   if (!result.ok) {
     const combined = `${result.error || ''}\n${result.stderr || ''}\n${result.stdout || ''}`;
     if (/command not found|not installed|zellij/i.test(combined)) {
@@ -1206,11 +1302,12 @@ async function ensureOpenClawSession() {
     '  exit 127;',
     'fi;',
     "if ! zellij list-sessions 2>/dev/null | awk '{print $1}' | grep -Fxq 'openclaw'; then",
-    "  zellij --session 'openclaw' -d -- bash -lc 'openclaw tui';",
+    "  zellij --session 'openclaw' -d;",
     'fi',
   ].join(' ');
 
   const result = await runRemoteCommand(`bash -lc ${shellQuote(ensureCommand)}`);
+  debugLog('zellij:create-openclaw', 'Ensure command completed', result);
   if (!result.ok) {
     const combined = `${result.error || ''}\n${result.stderr || ''}\n${result.stdout || ''}`;
     if (/zellij missing|command not found|not installed|zellij/i.test(combined)) {
@@ -1233,6 +1330,7 @@ async function killZellijSession(name) {
   ].join(' ');
 
   const result = await runRemoteCommand(`bash -lc ${shellQuote(command)}`);
+  debugLog('zellij:kill', 'Kill command completed', result);
   if (!result.ok) {
     const combined = `${result.error || ''}\n${result.stderr || ''}\n${result.stdout || ''}`;
     if (/zellij missing|command not found|not installed|zellij/i.test(combined)) {
@@ -1250,6 +1348,15 @@ async function createPTYSession(tabId, runtimeConfig, options = {}) {
   destroySession(tabId);
 
   const terminalConfig = buildTerminalConfig(runtimeConfig);
+  debugLog('pty:create', 'Creating PTY session', {
+    tabId,
+    preserveRetryCount: !!options.preserveRetryCount,
+    preservedRetryCount,
+    terminalConfig: {
+      ...terminalConfig,
+      password: terminalConfig.password ? '<redacted>' : '',
+    },
+  });
   if (terminalConfig.error) {
     sendPtyError(tabId, terminalConfig.error);
     throw new Error(terminalConfig.error);
@@ -1269,6 +1376,7 @@ async function createPTYSession(tabId, runtimeConfig, options = {}) {
     status: 'connecting',
     retryCount: preservedRetryCount,
     retryTimer: null,
+    reconnectResetTimer: null,
     intentionalDisconnect: false,
     configSnapshot: terminalConfig,
   };
@@ -1278,6 +1386,12 @@ async function createPTYSession(tabId, runtimeConfig, options = {}) {
     const binary = resolveSSHBinary(terminalConfig);
     const args = buildSpawnArgs(tabId, terminalConfig);
     const env = buildSpawnEnv(terminalConfig);
+    debugLog('pty:create', 'Spawning PTY process', {
+      tabId,
+      binary,
+      args,
+      envPreview: { TERM: env.TERM, SSHPASS: env.SSHPASS ? '<set>' : '<unset>' },
+    });
 
     const ptyProcess = pty.spawn(binary, args, {
       name: 'xterm-256color',
@@ -1289,22 +1403,39 @@ async function createPTYSession(tabId, runtimeConfig, options = {}) {
 
     session.ptyProcess = ptyProcess;
     session.status = 'connected';
-    session.retryCount = 0;
     session.intentionalDisconnect = false;
+
+    if (session.reconnectResetTimer) {
+      clearTimeout(session.reconnectResetTimer);
+      session.reconnectResetTimer = null;
+    }
+    session.reconnectResetTimer = setTimeout(() => {
+      const activeSession = sessions.get(tabId);
+      if (!activeSession || activeSession !== session) return;
+      activeSession.retryCount = 0;
+      activeSession.reconnectResetTimer = null;
+      debugLog('pty:reconnect', 'Reset retry counter after stable connection window', {
+        tabId,
+        stableMs: RECONNECT_STABLE_RESET_MS,
+      });
+    }, RECONNECT_STABLE_RESET_MS);
 
     sendPtyStatus(tabId, 'connected');
 
     ptyProcess.onData((data) => {
+      debugLog('pty:data', 'Received PTY output', { tabId, length: data ? data.length : 0, data: sanitizeForLog(data, { maxLength: 1200 }) });
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('pty:data', { tabId, data });
       }
     });
 
     ptyProcess.onExit(({ exitCode, signal }) => {
+      debugLog('pty:exit', 'PTY exited', { tabId, exitCode, signal });
       handlePTYExit(tabId, exitCode, signal);
     });
   } catch (err) {
     session.status = 'disconnected';
+    debugLog('pty:create', 'Failed to create PTY session', { tabId, error: err.message, stack: err.stack });
     sendPtyError(tabId, err.message);
     throw err;
   }
@@ -1323,10 +1454,15 @@ function resizePTY(tabId, cols, rows) {
 function destroySession(tabId) {
   const session = sessions.get(tabId);
   if (!session) return;
+  debugLog('pty:destroy', 'Destroying session', { tabId, status: session.status, retryCount: session.retryCount, intentionalDisconnect: session.intentionalDisconnect });
 
   if (session.retryTimer) {
     clearTimeout(session.retryTimer);
     session.retryTimer = null;
+  }
+  if (session.reconnectResetTimer) {
+    clearTimeout(session.reconnectResetTimer);
+    session.reconnectResetTimer = null;
   }
   if (session.ptyProcess) {
     try { session.ptyProcess.kill(); } catch (_) { /* ignore */ }
@@ -1357,6 +1493,14 @@ function cleanupAllSessions() {
 function handlePTYExit(tabId, exitCode, signal) {
   const session = sessions.get(tabId);
   if (!session) return;
+  debugLog('pty:exit-handler', 'Handling PTY exit', {
+    tabId,
+    exitCode,
+    signal,
+    status: session.status,
+    retryCount: session.retryCount,
+    intentionalDisconnect: session.intentionalDisconnect,
+  });
 
   session.ptyProcess = null;
 
@@ -1383,6 +1527,14 @@ function handlePTYExit(tabId, exitCode, signal) {
   const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, session.retryCount);
   session.retryCount += 1;
   session.status = 'reconnecting';
+  debugLog('pty:reconnect', 'Scheduling reconnect attempt', {
+    tabId,
+    attempt: session.retryCount,
+    maxAttempts: RECONNECT_MAX_ATTEMPTS,
+    delayMs: delay,
+    lastExitCode: exitCode,
+    lastSignal: signal,
+  });
 
   sendPtyStatus(tabId, 'reconnecting', `Reconnecting (attempt ${session.retryCount}/${RECONNECT_MAX_ATTEMPTS}) in ${delay / 1000}s...`);
 
@@ -1390,6 +1542,7 @@ function handlePTYExit(tabId, exitCode, signal) {
     session.retryTimer = null;
     createPTYSession(tabId, { ...config }, { preserveRetryCount: true })
       .catch((err) => {
+        debugLog('pty:reconnect', 'Reconnect attempt failed immediately', { tabId, error: err.message, stack: err.stack });
         sendPtyError(tabId, `Reconnect attempt failed: ${err.message}`);
         handlePTYExit(tabId, -1, null);
       });

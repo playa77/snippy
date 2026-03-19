@@ -24,7 +24,7 @@ npm run build:all        # build both
 
 ## Features
 
-**Zellij-backed AGENT Session** — AGENT is hard-bound to the remote zellij session `openclaw`. On connect, Snippy checks whether `openclaw` exists, creates it if needed, starts `openclaw tui`, and then attaches. VPS remains a plain SSH shell for admin work. Supports password and SSH key authentication.
+**Zellij-backed AGENT Session** — AGENT is hard-bound to the remote zellij session `openclaw`. On connect, Snippy checks whether `openclaw` exists, creates it if needed, and then attaches. VPS remains a plain SSH shell for admin work. Supports password and SSH key authentication.
 
 **SESSIONS Tab** — Manage remote zellij sessions directly from Snippy. List active sessions, inspect creation/age/client metadata, kill selected sessions, and manually create the `openclaw` session.
 
@@ -43,6 +43,14 @@ npm run build:all        # build both
 ## Configuration
 
 Settings are stored in `~/.config/snippy/snippy-config.json` (Linux). Edit via the in-app settings panel or directly in the JSON file.
+
+## Debug logging (verbose)
+
+Snippy now writes an extensive debug log for every launch in:
+
+- `~/.config/snippy/logs/snippy-debug-<timestamp>.log`
+
+The exact path for the current run is also available via the main-process IPC method `debug:get-log-info` (exposed in preload as `window.snippy.getDebugLogInfo()`).
 
 ## License
 

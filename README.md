@@ -44,6 +44,14 @@ npm run build:all        # build both
 
 Settings are stored in `~/.config/snippy/snippy-config.json` (Linux). Edit via the in-app settings panel or directly in the JSON file.
 
+## Debug logging (verbose)
+
+Snippy now writes an extensive debug log for every launch in:
+
+- `~/.config/snippy/logs/snippy-debug-<timestamp>.log`
+
+The exact path for the current run is also available via the main-process IPC method `debug:get-log-info` (exposed in preload as `window.snippy.getDebugLogInfo()`).
+
 ## License
 
 MIT

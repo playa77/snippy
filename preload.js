@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('snippy', {
   // App metadata
   // -------------------------------------------------------------------------
   getVersion: () => ipcRenderer.invoke('get-version'),
+  getDebugLogInfo: () => ipcRenderer.invoke('debug:get-log-info'),
 
   // -------------------------------------------------------------------------
   // Settings

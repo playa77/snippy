@@ -87,6 +87,7 @@ const RECONNECT_STABLE_RESET_MS = 30000;
 
 let sshpassAvailable = false;
 let debugLogPath = null;
+const ansiRegex = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 
 // ---------------------------------------------------------------------------
 // Window creation
@@ -1256,7 +1257,7 @@ async function runRemoteCommand(command) {
 
 function parseZellijSessionsOutput(output) {
   debugLog('zellij:parse', 'Raw zellij list-sessions output', { output });
- main
+
   const lines = output
     .split(/\r?\n/)
     .map((line) => line.replace(ansiRegex, '').trim())

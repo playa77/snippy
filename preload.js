@@ -30,6 +30,9 @@ contextBridge.exposeInMainWorld('snippy', {
   ptyRetry: (tabId) => ipcRenderer.invoke('pty:retry', { tabId }),
   ptyInput: (tabId, data) => ipcRenderer.send('pty:input', { tabId, data }),
   ptyResize: (tabId, cols, rows) => ipcRenderer.send('pty:resize', { tabId, cols, rows }),
+  zellijListSessions: () => ipcRenderer.invoke('zellij:list-sessions'),
+  zellijKillSession: (name) => ipcRenderer.invoke('zellij:kill-session', { name }),
+  zellijCreateOpenClaw: () => ipcRenderer.invoke('zellij:create-openclaw'),
 
   onPtyData: (callback) => {
     const handler = (_event, payload) => callback(payload);

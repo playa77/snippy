@@ -434,6 +434,67 @@
 
     .fm-message.error { color: var(--red); }
 
+    /* -- Sessions tab ------------------------------------------------------ */
+    #pane-sessions {
+      padding: 12px;
+      gap: 10px;
+    }
+
+    .sessions-toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .sessions-status {
+      color: var(--text-dim);
+      font-size: 0.85em;
+      min-height: 20px;
+    }
+
+    .sessions-table-wrap {
+      flex: 1;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: auto;
+      background: var(--bg-input);
+    }
+
+    .sessions-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9em;
+    }
+
+    .sessions-table th,
+    .sessions-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .sessions-table th {
+      background: var(--bg-raised);
+      color: var(--text-dim);
+      font-size: 0.82em;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .sessions-table tbody tr { cursor: pointer; }
+    .sessions-table tbody tr:hover { background: var(--accent-bg); }
+    .sessions-table tbody tr.selected {
+      background: var(--accent-bg);
+      color: var(--accent);
+    }
+
+    .sessions-empty {
+      color: var(--text-dim);
+      text-align: center !important;
+    }
+
     /* -- Settings panel ---------------------------------------------------- */
     #settings-overlay {
       position: fixed;
@@ -816,6 +877,7 @@
     <button class="tab-btn" data-tab="vps">
       VPS <span class="tab-status disconnected" id="status-vps"></span>
     </button>
+    <button class="tab-btn" data-tab="sessions">SESSIONS</button>
     <button class="tab-btn" data-tab="files">FILES</button>
   </div>
 
@@ -857,6 +919,31 @@
         </div>
       </div>
     </div>
+
+    <!-- Zellij sessions -->
+    <div class="content-pane" id="pane-sessions">
+      <div class="sessions-toolbar">
+        <button class="fm-btn" id="sessions-btn-refresh">Refresh</button>
+        <button class="fm-btn" id="sessions-btn-create-openclaw">Create OpenClaw Session</button>
+        <button class="fm-btn" id="sessions-btn-kill">Kill Selected</button>
+      </div>
+      <div class="sessions-status" id="sessions-status">Connect to a VPS first to manage zellij sessions.</div>
+      <div class="sessions-table-wrap">
+        <table class="sessions-table">
+          <thead>
+            <tr>
+              <th>Session</th>
+              <th>Created</th>
+              <th>Age</th>
+              <th>Clients</th>
+            </tr>
+          </thead>
+          <tbody id="sessions-table-body">
+            <tr><td class="sessions-empty" colspan="4">No sessions.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- Settings overlay -->
@@ -886,10 +973,6 @@
       <div class="settings-group">
         <label>SSH Key Path (optional, overrides password)</label>
         <input id="set-key-path" type="text" placeholder="/home/you/.ssh/id_rsa">
-      </div>
-      <div class="settings-group">
-        <label>Agent Command</label>
-        <input id="set-agent-cmd" type="text" placeholder="openclaw tui">
       </div>
       <div class="settings-group">
         <label>Workspace Path</label>

@@ -24,7 +24,9 @@ npm run build:all        # build both
 
 ## Features
 
-**Dual SSH Terminals** — Two tabs: AGENT runs a configurable command (default: `openclaw tui`) with automatic reconnection on disconnect (exponential backoff, gives up after 5 attempts). VPS provides a plain SSH shell for admin work. Supports password and SSH key authentication.
+**Zellij-backed AGENT Session** — AGENT is hard-bound to the remote zellij session `openclaw`. On connect, Snippy checks whether `openclaw` exists, creates it if needed, starts `openclaw tui`, and then attaches. VPS remains a plain SSH shell for admin work. Supports password and SSH key authentication.
+
+**SESSIONS Tab** — Manage remote zellij sessions directly from Snippy. List active sessions, inspect creation/age/client metadata, kill selected sessions, and manually create the `openclaw` session.
 
 **Copy and Paste** — Ctrl+Shift+C / Ctrl+Shift+V in terminals. Right-click context menu for copy/paste works everywhere in the app — terminals, input fields, text editors, settings.
 
@@ -32,7 +34,7 @@ npm run build:all        # build both
 
 **Gateway Health and Control** — Status LED in the header polls the OpenClaw gateway (default: `localhost:18789`) every 5 seconds. Start, stop, and restart buttons with confirmation dialogs. Every gateway action opens a live log window showing real-time command output, which stays open until dismissed.
 
-**Settings** — Gear icon opens a settings panel. Configurable: VPS host, port, username, password, SSH key path, agent command, workspace path, gateway host and port. All settings persist to disk across sessions.
+**Settings** — Gear icon opens a settings panel. Configurable: VPS host, port, username, password, SSH key path, workspace path, gateway host and port. All settings persist to disk across sessions.
 
 **Font Size** — A+ / A- buttons in the header scale the entire UI including terminal font size. Persists across sessions.
 

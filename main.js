@@ -28,7 +28,6 @@ const CONFIG_DEFAULTS = {
   username: '',
   password: '',
   privateKeyPath: '',
-  agentCommand: 'openclaw tui',
   workspacePath: '~/.openclaw/workspace',
   gatewayHost: 'localhost',
   gatewayPort: 18789,
@@ -201,6 +200,18 @@ ipcMain.handle('pty:connect', async (_event, { tabId, config: rendererConfig }) 
   }
 
   await createPTYSession(tabId, { ...config }, { preserveRetryCount: false });
+});
+
+ipcMain.handle('zellij:list-sessions', async () => {
+  return listZellijSessions();
+});
+
+ipcMain.handle('zellij:kill-session', async (_event, { name }) => {
+  return killZellijSession(name);
+});
+
+ipcMain.handle('zellij:create-openclaw', async () => {
+  return ensureOpenClawSession();
 });
 
 ipcMain.handle('pty:disconnect', async (_event, { tabId }) => {
@@ -1019,8 +1030,28 @@ function buildTerminalConfig(runtimeConfig) {
     authMode,
     keyPath: runtimeConfig.privateKeyPath,
     password: runtimeConfig.password,
-    agentCommand: runtimeConfig.agentCommand || 'openclaw tui',
   };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function getAgentTabRemoteCommand() {
+  const zellijInstallHint = 'sudo apt update && sudo apt install zellij';
+  const openclawSession = 'openclaw';
+  const openclawLaunch = "openclaw tui";
+  return [
+    `if ! command -v zellij >/dev/null 2>&1; then`,
+    `  echo '[snippy] zellij is not installed on the remote VPS.';`,
+    `  echo '[snippy] Install it with: ${zellijInstallHint}';`,
+    `  exit 127;`,
+    `fi;`,
+    `if ! zellij list-sessions 2>/dev/null | awk '{print $1}' | grep -Fxq ${shellQuote(openclawSession)}; then`,
+    `  zellij --session ${shellQuote(openclawSession)} -d -- bash -lc ${shellQuote(openclawLaunch)};`,
+    `fi;`,
+    `exec zellij attach ${shellQuote(openclawSession)}`,
+  ].join(' ');
 }
 
 function buildSSHArgs(tabId, terminalConfig) {
@@ -1040,8 +1071,8 @@ function buildSSHArgs(tabId, terminalConfig) {
 
   args.push(`${terminalConfig.username}@${terminalConfig.host}`);
 
-  if (tabId === 'agent' && terminalConfig.agentCommand) {
-    args.push(terminalConfig.agentCommand);
+  if (tabId === 'agent') {
+    args.push(getAgentTabRemoteCommand());
   }
 
   return args;
@@ -1077,6 +1108,140 @@ function sendPtyStatus(tabId, status, message) {
 function sendPtyError(tabId, message) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send('pty:error', { tabId, message });
+}
+
+async function runRemoteCommand(command) {
+  const sshConfig = buildSshConfig();
+  if (sshConfig.error) {
+    return { ok: false, error: sshConfig.error };
+  }
+
+  return new Promise((resolve) => {
+    const conn = new Client();
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const finalize = (result) => {
+      if (settled) return;
+      settled = true;
+      try { conn.end(); } catch (_) { /* ignore */ }
+      resolve(result);
+    };
+
+    conn.on('ready', () => {
+      conn.exec(command, (err, stream) => {
+        if (err) {
+          finalize({ ok: false, error: err.message });
+          return;
+        }
+
+        stream.on('data', (chunk) => {
+          stdout += chunk.toString('utf8');
+        });
+
+        stream.stderr.on('data', (chunk) => {
+          stderr += chunk.toString('utf8');
+        });
+
+        stream.on('close', (code) => {
+          if (code === 0) {
+            finalize({ ok: true, stdout, stderr });
+            return;
+          }
+
+          const msg = stderr.trim() || stdout.trim() || `Remote command exited with code ${code}.`;
+          finalize({ ok: false, error: msg, stdout, stderr, code });
+        });
+      });
+    });
+
+    conn.on('error', (err) => {
+      finalize({ ok: false, error: err.message });
+    });
+
+    conn.connect(sshConfig);
+  });
+}
+
+function parseZellijSessionsOutput(output) {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.map((line) => {
+    const [nameToken] = line.split(/\s+/);
+    const name = (nameToken || '').replace(/[,*]+$/g, '');
+    const createdMatch = line.match(/\[Created ([^\]]+)\]/i);
+    const clientsMatch = line.match(/\((\d+)\s+clients?\)/i);
+    const ageMatch = line.match(/\]\s*([^()]+?)\s*(?:\(|$)/);
+
+    return {
+      name,
+      created: createdMatch ? createdMatch[1].trim() : 'Unknown',
+      age: ageMatch ? ageMatch[1].trim() : 'Unknown',
+      clients: clientsMatch ? Number(clientsMatch[1]) : 0,
+      raw: line,
+    };
+  }).filter((session) => !!session.name);
+}
+
+async function listZellijSessions() {
+  const result = await runRemoteCommand(`bash -lc ${shellQuote('command -v zellij >/dev/null 2>&1 && zellij list-sessions')}`);
+  if (!result.ok) {
+    const combined = `${result.error || ''}\n${result.stderr || ''}\n${result.stdout || ''}`;
+    if (/command not found|not installed|zellij/i.test(combined)) {
+      return { ok: false, error: 'zellij is not installed on the VPS. Install it with: sudo apt update && sudo apt install zellij' };
+    }
+    return { ok: false, error: result.error || 'Failed to list zellij sessions.' };
+  }
+  return { ok: true, sessions: parseZellijSessionsOutput(result.stdout || '') };
+}
+
+async function ensureOpenClawSession() {
+  const ensureCommand = [
+    'if ! command -v zellij >/dev/null 2>&1; then',
+    "  echo 'zellij missing';",
+    '  exit 127;',
+    'fi;',
+    "if ! zellij list-sessions 2>/dev/null | awk '{print $1}' | grep -Fxq 'openclaw'; then",
+    "  zellij --session 'openclaw' -d -- bash -lc 'openclaw tui';",
+    'fi',
+  ].join(' ');
+
+  const result = await runRemoteCommand(`bash -lc ${shellQuote(ensureCommand)}`);
+  if (!result.ok) {
+    const combined = `${result.error || ''}\n${result.stderr || ''}\n${result.stdout || ''}`;
+    if (/zellij missing|command not found|not installed|zellij/i.test(combined)) {
+      return { ok: false, error: 'zellij is not installed on the VPS. Install it with: sudo apt update && sudo apt install zellij' };
+    }
+    return { ok: false, error: result.error || 'Failed to create openclaw session.' };
+  }
+  return { ok: true };
+}
+
+async function killZellijSession(name) {
+  if (!name) return { ok: false, error: 'Session name is required.' };
+  const sessionName = shellQuote(name);
+  const command = [
+    'if ! command -v zellij >/dev/null 2>&1; then',
+    "  echo 'zellij missing';",
+    '  exit 127;',
+    'fi;',
+    `zellij delete-session ${sessionName} 2>/dev/null || zellij kill-session ${sessionName} 2>/dev/null`,
+  ].join(' ');
+
+  const result = await runRemoteCommand(`bash -lc ${shellQuote(command)}`);
+  if (!result.ok) {
+    const combined = `${result.error || ''}\n${result.stderr || ''}\n${result.stdout || ''}`;
+    if (/zellij missing|command not found|not installed|zellij/i.test(combined)) {
+      return { ok: false, error: 'zellij is not installed on the VPS. Install it with: sudo apt update && sudo apt install zellij' };
+    }
+    return { ok: false, error: result.error || `Failed to kill session "${name}".` };
+  }
+
+  return { ok: true };
 }
 
 async function createPTYSession(tabId, runtimeConfig, options = {}) {

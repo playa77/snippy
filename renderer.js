@@ -1,4 +1,4 @@
-// renderer.js — Snippy v1.1.9
+// renderer.js — Snippy v1.1.10
 // Manages xterm terminals, copy/paste, file manager, gateway health,
 // settings panel, and font size controls.
 

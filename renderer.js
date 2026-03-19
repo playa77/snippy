@@ -12,6 +12,7 @@
     agent: { terminal: null, fitAddon: null, connected: false },
     vps: { terminal: null, fitAddon: null, connected: false },
   };
+  const TERMINAL_TAB_IDS = ['agent', 'vps'];
 
   let activeTab = 'agent';
   let currentFontSize = 14;
@@ -27,6 +28,7 @@
   let fmContextTarget = null;     // entry targeted by right-click
   let fmEditorDirty = false;
   let fmEditingPath = '';
+  let sessionsRefreshInFlight = false;
 
   // =========================================================================
   // DOM REFS
@@ -73,6 +75,7 @@
     wireGateway();
     wireContextMenu();
     wireFileManager();
+    wireSessionsTab();
     wirePtyEvents();
   })();
 
@@ -80,7 +83,7 @@
   // TERMINALS
   // =========================================================================
   function createTerminals() {
-    for (const tabId of ['agent', 'vps']) {
+    for (const tabId of TERMINAL_TAB_IDS) {
       const terminal = new window.Terminal({
         cursorBlink: true,
         fontSize: currentFontSize,
@@ -182,7 +185,7 @@
   }
 
   function fitAllTerminals() {
-    for (const tabId of ['agent', 'vps']) {
+    for (const tabId of TERMINAL_TAB_IDS) {
       const tab = tabs[tabId];
       if (tab && tab.fitAddon) {
         try { tab.fitAddon.fit(); } catch (_) { /* ignore */ }
@@ -217,6 +220,10 @@
         // Auto-connect SFTP and load files when switching to FILES tab
         if (tabId === 'files' && isConnected) {
           initFileManager();
+        }
+
+        if (tabId === 'sessions' && isConnected) {
+          refreshSessionsList();
         }
       });
     });
@@ -261,6 +268,10 @@
     isConnected = true;
     btnConnect.style.display = 'none';
     btnDisconnect.style.display = '';
+
+    if (activeTab === 'sessions') {
+      refreshSessionsList();
+    }
   }
 
   async function connectTab(tabId) {
@@ -289,7 +300,7 @@
   }
 
   async function handleDisconnect() {
-    for (const tabId of ['agent', 'vps']) {
+    for (const tabId of TERMINAL_TAB_IDS) {
       await window.snippy.ptyDisconnect(tabId);
       tabs[tabId].connected = false;
       setStatusDot(tabId, 'disconnected');
@@ -300,6 +311,8 @@
     isConnected = false;
 
     showOverlay('files', 'Connect to a VPS first to browse files.');
+    setSessionsStatus('Connect to a VPS first to manage zellij sessions.');
+    renderSessionsTable([]);
 
     btnConnect.style.display = '';
     btnDisconnect.style.display = 'none';
@@ -357,7 +370,7 @@
   function applyFontSize() {
     document.documentElement.style.setProperty('--font-size', currentFontSize + 'px');
 
-    for (const tabId of ['agent', 'vps']) {
+    for (const tabId of TERMINAL_TAB_IDS) {
       const tab = tabs[tabId];
       if (tab && tab.terminal) {
         tab.terminal.options.fontSize = currentFontSize;
@@ -368,7 +381,7 @@
     setTimeout(() => {
       fitAllTerminals();
       // Send new dimensions to SSH for connected terminals
-      for (const tabId of ['agent', 'vps']) {
+      for (const tabId of TERMINAL_TAB_IDS) {
         if (tabs[tabId].connected) {
           const { cols, rows } = tabs[tabId].terminal;
           window.snippy.ptyResize(tabId, cols, rows);
@@ -390,7 +403,6 @@
       $('#set-username').value = cfg.username || '';
       $('#set-password').value = cfg.password || '';
       $('#set-key-path').value = cfg.privateKeyPath || '';
-      $('#set-agent-cmd').value = cfg.agentCommand || 'openclaw tui';
       $('#set-workspace').value = cfg.workspacePath || '~/.openclaw/workspace';
       $('#set-gw-host').value = cfg.gatewayHost || 'localhost';
       $('#set-gw-port').value = cfg.gatewayPort || 18789;
@@ -408,7 +420,6 @@
         username: $('#set-username').value.trim(),
         password: $('#set-password').value,
         privateKeyPath: $('#set-key-path').value.trim(),
-        agentCommand: $('#set-agent-cmd').value.trim() || 'openclaw tui',
         workspacePath: $('#set-workspace').value.trim() || '~/.openclaw/workspace',
         gatewayHost: $('#set-gw-host').value.trim() || 'localhost',
         gatewayPort: parseInt($('#set-gw-port').value.trim(), 10) || 18789,
@@ -518,7 +529,7 @@
     let contextInputEl = null; // for input/textarea right-click targets
 
     // Right-click on terminal panes
-    for (const tabId of ['agent', 'vps']) {
+    for (const tabId of TERMINAL_TAB_IDS) {
       $(`#pane-${tabId}`).addEventListener('contextmenu', (e) => {
         e.preventDefault();
         contextTabId = tabId;
@@ -898,6 +909,146 @@
         alert('Delete failed: ' + result.error);
       }
     });
+  }
+
+  // =========================================================================
+  // ZELLIJ SESSIONS TAB
+  // =========================================================================
+  function wireSessionsTab() {
+    const refreshBtn = $('#sessions-btn-refresh');
+    const createBtn = $('#sessions-btn-create-openclaw');
+    const killBtn = $('#sessions-btn-kill');
+
+    refreshBtn.addEventListener('click', () => refreshSessionsList());
+    createBtn.addEventListener('click', async () => {
+      if (!isConnected) {
+        setSessionsStatus('Connect to a VPS first to manage zellij sessions.');
+        return;
+      }
+
+      setSessionsStatus('Ensuring openclaw session exists...');
+      const result = await window.snippy.zellijCreateOpenClaw();
+      if (!result.ok) {
+        setSessionsStatus(result.error || 'Failed to create openclaw session.');
+        return;
+      }
+
+      setSessionsStatus('OpenClaw session is ready.');
+      refreshSessionsList();
+    });
+
+    killBtn.addEventListener('click', async () => {
+      if (!isConnected) {
+        setSessionsStatus('Connect to a VPS first to manage zellij sessions.');
+        return;
+      }
+
+      const selected = getSelectedSessionName();
+      if (!selected) {
+        setSessionsStatus('Select a session to kill.');
+        return;
+      }
+
+      const confirmed = confirm(`Kill zellij session "${selected}"?`);
+      if (!confirmed) return;
+
+      const result = await window.snippy.zellijKillSession(selected);
+      if (!result.ok) {
+        setSessionsStatus(result.error || `Failed to kill session "${selected}".`);
+        return;
+      }
+
+      setSessionsStatus(`Killed session "${selected}".`);
+      refreshSessionsList();
+    });
+  }
+
+  async function refreshSessionsList() {
+    if (!isConnected) {
+      setSessionsStatus('Connect to a VPS first to manage zellij sessions.');
+      renderSessionsTable([]);
+      return;
+    }
+    if (sessionsRefreshInFlight) return;
+
+    sessionsRefreshInFlight = true;
+    setSessionsStatus('Loading zellij sessions...');
+    setSessionsControlsEnabled(false);
+
+    try {
+      const result = await window.snippy.zellijListSessions();
+      if (!result.ok) {
+        renderSessionsTable([]);
+        setSessionsStatus(result.error || 'Failed to load zellij sessions.');
+        return;
+      }
+
+      renderSessionsTable(result.sessions || []);
+      const count = (result.sessions || []).length;
+      setSessionsStatus(count === 0 ? 'No active zellij sessions found.' : `Loaded ${count} active zellij session${count === 1 ? '' : 's'}.`);
+    } finally {
+      sessionsRefreshInFlight = false;
+      setSessionsControlsEnabled(true);
+    }
+  }
+
+  function renderSessionsTable(sessions) {
+    const tbody = $('#sessions-table-body');
+    tbody.innerHTML = '';
+
+    if (!sessions.length) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 4;
+      cell.className = 'sessions-empty';
+      cell.textContent = 'No sessions.';
+      row.appendChild(cell);
+      tbody.appendChild(row);
+      return;
+    }
+
+    for (const session of sessions) {
+      const row = document.createElement('tr');
+      row.dataset.session = session.name;
+
+      row.innerHTML = `
+        <td>${escapeHtml(session.name || '')}</td>
+        <td>${escapeHtml(session.created || 'Unknown')}</td>
+        <td>${escapeHtml(session.age || 'Unknown')}</td>
+        <td>${Number.isFinite(session.clients) ? session.clients : 0}</td>
+      `;
+
+      row.addEventListener('click', () => {
+        $('#sessions-table-body tr.selected')?.classList.remove('selected');
+        row.classList.add('selected');
+      });
+
+      tbody.appendChild(row);
+    }
+  }
+
+  function setSessionsStatus(message) {
+    $('#sessions-status').textContent = message || '';
+  }
+
+  function setSessionsControlsEnabled(enabled) {
+    $('#sessions-btn-refresh').disabled = !enabled;
+    $('#sessions-btn-create-openclaw').disabled = !enabled;
+    $('#sessions-btn-kill').disabled = !enabled;
+  }
+
+  function getSelectedSessionName() {
+    const selectedRow = $('#sessions-table-body tr.selected');
+    return selectedRow ? selectedRow.dataset.session : '';
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 
   async function initFileManager() {

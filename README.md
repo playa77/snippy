@@ -46,11 +46,16 @@ Settings are stored in `~/.config/snippy/snippy-config.json` (Linux). Edit via t
 
 ## Debug logging (verbose)
 
-Snippy now writes an extensive debug log for every launch in:
+Debug logging is now opt-in. Launch Snippy with `--debug` to enable verbose logging:
+
+- `npm start -- --debug`
+- or `electron . --no-sandbox --debug`
+
+When enabled, Snippy writes an extensive debug log for each launch in:
 
 - `~/.config/snippy/logs/snippy-debug-<timestamp>.log`
 
-The exact path for the current run is also available via the main-process IPC method `debug:get-log-info` (exposed in preload as `window.snippy.getDebugLogInfo()`).
+The exact path for the current run (and whether debug mode is enabled) is available via the main-process IPC method `debug:get-log-info` (exposed in preload as `window.snippy.getDebugLogInfo()`).
 
 ## License
 

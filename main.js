@@ -87,6 +87,7 @@ const RECONNECT_STABLE_RESET_MS = 30000;
 
 let sshpassAvailable = false;
 let debugLogPath = null;
+const debugModeEnabled = process.argv.includes('--debug');
 const ansiRegex = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,7 @@ function sanitizeForLog(value, options = {}) {
 }
 
 function initDebugLogger() {
+  if (!debugModeEnabled) return;
   try {
     const logsDir = path.join(app.getPath('userData'), 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
@@ -148,6 +150,7 @@ function initDebugLogger() {
 }
 
 function debugLog(scope, message, details) {
+  if (!debugModeEnabled) return;
   const now = new Date().toISOString();
   const detailPart = details === undefined ? '' : ` | details=${sanitizeForLog(details)}`;
   const line = `[${now}] [${scope}] ${message}${detailPart}\n`;
@@ -214,6 +217,7 @@ function createWindow() {
 app.whenReady().then(async () => {
   config = loadConfig();
   initDebugLogger();
+  debugLog('app', 'Debug mode enabled');
   debugLog('app', 'Loaded config from disk', { ...config, password: config.password ? '<redacted>' : '' });
   sshpassAvailable = await checkSshpassAvailable();
   debugLog('app', 'sshpass availability detected', { sshpassAvailable });
@@ -225,7 +229,7 @@ app.on('window-all-closed', () => app.quit());
 // IPC: app metadata
 // ---------------------------------------------------------------------------
 ipcMain.handle('get-version', () => APP_VERSION);
-ipcMain.handle('debug:get-log-info', () => ({ path: debugLogPath || '' }));
+ipcMain.handle('debug:get-log-info', () => ({ enabled: debugModeEnabled, path: debugLogPath || '' }));
 
 // ---------------------------------------------------------------------------
 // IPC: settings management
@@ -1038,8 +1042,9 @@ function pollGatewayOnce() {
       stream.on('close', () => {
         conn.end();
         const trimmed = output.trim();
-        // Any HTTP response code means the gateway is up
-        if (trimmed === 'DOWN' || trimmed === '') {
+        const numericCode = Number.parseInt(trimmed, 10);
+        const isHttpCode = Number.isInteger(numericCode) && numericCode >= 100 && numericCode <= 599;
+        if (trimmed === 'DOWN' || trimmed === '' || trimmed === '000' || !isHttpCode) {
           sendGatewayStatus('down');
         } else {
           sendGatewayStatus('up');

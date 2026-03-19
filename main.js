@@ -1,4 +1,4 @@
-// main.js — Snippy v1.1.9
+// main.js — Snippy v1.1.10
 // Electron main process: SSH terminals, SFTP file manager, gateway health,
 // settings persistence, close confirmation, font size control.
 
@@ -17,7 +17,7 @@ app.commandLine.appendSwitch('no-sandbox');
 // ---------------------------------------------------------------------------
 // App version — single source of truth
 // ---------------------------------------------------------------------------
-const APP_VERSION = '1.1.9';
+const APP_VERSION = '1.1.10';
 
 // ---------------------------------------------------------------------------
 // Persistent settings — plain JSON file in userData directory

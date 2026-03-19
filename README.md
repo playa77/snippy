@@ -1,4 +1,4 @@
-# Snippy v1.1.9
+# Snippy v1.1.10
 
 Desktop client for managing a remote VPS running [OpenClaw](https://openclaw.ai).
 
